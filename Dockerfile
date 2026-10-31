@@ -15,7 +15,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+# -p 2 and GOGC=50 keep peak memory low so small build machines don't OOM.
+RUN CGO_ENABLED=0 GOGC=50 go build -p 2 -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 # 3) Minimal runtime: no shell, no package manager, non-root.
 FROM gcr.io/distroless/static-debian12:nonroot
