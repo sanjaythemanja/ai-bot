@@ -1,0 +1,8 @@
+# App settings. Secrets (API keys, OAuth) stay in .env.
+
+# true  = send_email and create_event wait in "Pending actions" until you click Approve.
+# false = they run immediately (still listed in the Actions panel as a log).
+#         Note: with false, the AI can send email on its own. Instructions hidden
+#         in an incoming email could try to trigger that, so keep true unless you
+#         trust every message the assistant will read.
+require_approval: true

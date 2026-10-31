@@ -1,0 +1,18 @@
+# Never send secrets or local state into the build
+.env
+.env.*
+!.env.example
+data/
+*.pem
+*.key
+
+# Rebuilt inside the image
+bin/
+web/dist/
+ui/node_modules/
+ui/*.tsbuildinfo
+
+# Not needed
+.git/
+.claude/
+.DS_Store

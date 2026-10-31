@@ -1,0 +1,24 @@
+# Local PostgreSQL for conversation history.
+#   make db-up     start (data persists in the "pgdata" volume)
+#   make db-down   stop (data kept)
+#   make db-psql   open a SQL shell
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: assistant
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-assistant}
+      POSTGRES_DB: assistant
+    ports:
+      - "127.0.0.1:5432:5432" # localhost only
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assistant -d assistant"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:
