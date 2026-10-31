@@ -32,7 +32,7 @@ func TestLiveAddAttendee(t *testing.T) {
 	}
 	loc := time.UTC
 	ws := mock.New(time.Now().In(loc))
-	tools := NewToolbox(ws.Mail(), ws.Calendar(), ws.Meetings(), NewActionStore(), loc, true)
+	tools := NewToolbox(NewActionStore(), true, demoPlugins(ws, loc)...)
 	agent := NewAgent(model, tools, loc, nil)
 
 	ctx, cancel := context.WithTimeout(auth.WithUser(context.Background(), store.User{ID: "live"}), 3*time.Minute)
@@ -71,7 +71,7 @@ func TestLiveColleaguesAndSummary(t *testing.T) {
 	}
 	loc := time.UTC
 	ws := mock.New(time.Now().In(loc))
-	agent := NewAgent(model, NewToolbox(ws.Mail(), ws.Calendar(), ws.Meetings(), NewActionStore(), loc, true), loc, nil)
+	agent := NewAgent(model, NewToolbox(NewActionStore(), true, demoPlugins(ws, loc)...), loc, nil)
 
 	for _, c := range []struct{ ask, want string }{
 		{"When are sara@example.com and marcus@example.com both free tomorrow for an hour?", "find_common_free_slots"},
@@ -91,5 +91,41 @@ func TestLiveColleaguesAndSummary(t *testing.T) {
 		if !strings.Contains(strings.Join(names, ","), c.want) {
 			t.Errorf("expected %s, got %v", c.want, names)
 		}
+	}
+}
+
+// TestLiveSlack checks the model uses the Slack plugin's tools (demo data).
+func TestLiveSlack(t *testing.T) {
+	if os.Getenv("LIVE_LLM") != "1" {
+		t.Skip("set LIVE_LLM=1 to call the real model from .env")
+	}
+	_ = godotenv.Load("../../.env")
+	model, err := llm.New(llm.Config{
+		Provider: os.Getenv("LLM_PROVIDER"), APIKey: os.Getenv("LLM_API_KEY"),
+		Model: os.Getenv("LLM_MODEL"), BaseURL: os.Getenv("LLM_BASE_URL"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := time.UTC
+	ws := mock.New(time.Now().In(loc))
+	agent := NewAgent(model, NewToolbox(NewActionStore(), true, demoPlugins(ws, loc)...), loc, nil)
+	ctx, cancel := context.WithTimeout(auth.WithUser(context.Background(), store.User{ID: "live"}), 2*time.Minute)
+	defer cancel()
+	_, reply, calls, err := agent.Run(ctx, nil, "What did I miss in Slack? Then reply in #incidents saying I'm looking into it.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, c := range calls {
+		names = append(names, c.Name)
+	}
+	t.Logf("tools: %v\nreply: %s", names, reply)
+	joined := strings.Join(names, ",")
+	if !strings.Contains(joined, "slack") || !strings.Contains(joined, "post_slack_message") {
+		t.Fatalf("expected Slack reads and a queued post, got %v", names)
+	}
+	if strings.Contains(joined, "email") {
+		t.Fatalf("model reached for email tools on a Slack request: %v", names)
 	}
 }

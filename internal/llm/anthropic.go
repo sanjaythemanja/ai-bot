@@ -62,7 +62,7 @@ func (a *Anthropic) Complete(ctx context.Context, req Request) (Response, error)
 	}
 
 	// Keep the full assistant turn (including thinking blocks) for replay.
-	out := Message{Role: RoleAssistant, Native: &Native{Kind: "anthropic", Raw: json.RawMessage(resp.RawJSON())}}
+	out := Message{Role: RoleAssistant, Native: &Native{Kind: "anthropic", Model: a.model, Raw: json.RawMessage(resp.RawJSON())}}
 	var text []string
 	for _, block := range resp.Content {
 		switch b := block.AsAny().(type) {
@@ -87,7 +87,7 @@ func (a *Anthropic) Complete(ctx context.Context, req Request) (Response, error)
 }
 
 func (a *Anthropic) toParam(m Message) anthropic.MessageParam {
-	if m.Native != nil && m.Native.Kind == "anthropic" {
+	if m.Native.replayable("anthropic", a.model) {
 		var orig anthropic.Message
 		if err := json.Unmarshal(m.Native.Raw, &orig); err == nil {
 			return orig.ToParam()
@@ -114,6 +114,10 @@ func (a *Anthropic) toParam(m Message) anthropic.MessageParam {
 
 func describeAnthropicError(err error) error {
 	var apiErr *anthropic.Error
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == 429 || apiErr.StatusCode >= 500) {
+		// Typed so the retry/router layer can treat it like other providers.
+		return &APIError{Status: apiErr.StatusCode, Message: err.Error()}
+	}
 	if errors.As(err, &apiErr) {
 		switch {
 		case apiErr.StatusCode == 401:

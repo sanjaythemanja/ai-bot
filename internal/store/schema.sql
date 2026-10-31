@@ -64,3 +64,13 @@ CREATE TABLE IF NOT EXISTS actions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS actions_user_idx ON actions (user_id, created_at DESC);
+
+-- Per-user links to other services (e.g. Slack), credential sealed with APP_SECRET.
+CREATE TABLE IF NOT EXISTS connections (
+    user_id    TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    provider   TEXT        NOT NULL,
+    label      TEXT        NOT NULL DEFAULT '',
+    secret     BYTEA       NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, provider)
+);

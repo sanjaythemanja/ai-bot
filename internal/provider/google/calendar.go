@@ -45,7 +45,10 @@ func (c *Calendar) ListEvents(ctx context.Context, calendarID string, from, to t
 		TimeMin(from.Format(time.RFC3339)).TimeMax(to.Format(time.RFC3339)).
 		SingleEvents(true).OrderBy("startTime").MaxResults(100).Context(ctx).Do()
 	if err != nil {
-		return nil, fmt.Errorf("calendar list %s: %w (for a colleague, they must share their calendar with you)", calID(calendarID), err)
+		if calendarID != "" && calendarID != "me" {
+			return nil, fmt.Errorf("calendar list %s: %w (for a colleague, they must share their calendar with you)", calendarID, err)
+		}
+		return nil, fmt.Errorf("calendar list: %w", err)
 	}
 	out := make([]provider.Event, 0, len(res.Items))
 	for _, it := range res.Items {

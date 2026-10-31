@@ -91,6 +91,10 @@ func (s *Sessions) End(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UserFromRequest resolves the signed-in user for routes outside /api
+// (e.g. /auth/slack/start), which Require doesn't cover.
+func (s *Sessions) UserFromRequest(r *http.Request) (store.User, error) { return s.user(r) }
+
 // user resolves the request's user from the cookie (or agent token).
 func (s *Sessions) user(r *http.Request) (store.User, error) {
 	if s.DemoUser != nil {
@@ -190,4 +194,37 @@ func (v Vault) Save(ctx context.Context, userID string, t *oauth2.Token) error {
 		return err
 	}
 	return v.Users.SaveGoogleToken(ctx, userID, sealed)
+}
+
+// ConnVault stores per-user credentials for other services (Slack, …),
+// encrypted at rest with APP_SECRET.
+type ConnVault struct {
+	Conns store.Connections
+	Box   *secure.Box
+}
+
+// Save encrypts and stores a credential for provider.
+func (v ConnVault) Save(ctx context.Context, userID, provider, label, secret string) error {
+	sealed, err := v.Box.Seal([]byte(secret))
+	if err != nil {
+		return err
+	}
+	return v.Conns.SaveConnection(ctx, userID, provider, label, sealed)
+}
+
+// Load returns the decrypted credential for the signed-in user in ctx.
+func (v ConnVault) Load(ctx context.Context, provider string) (string, error) {
+	u, err := UserFrom(ctx)
+	if err != nil {
+		return "", err
+	}
+	sealed, err := v.Conns.ConnectionSecret(ctx, u.ID, provider)
+	if err != nil {
+		return "", err
+	}
+	raw, err := v.Box.Open(sealed)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }

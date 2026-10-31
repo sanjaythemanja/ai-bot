@@ -12,6 +12,10 @@ import (
 // ErrNotConnected is returned when an integration has no credentials yet.
 var ErrNotConnected = errors.New("integration not connected")
 
+// ErrReauth means the stored sign-in was rejected (expired, revoked, or
+// issued to a different OAuth client); the user must sign in again.
+var ErrReauth = errors.New("your Google access expired or was revoked — sign out and sign in again")
+
 // Email is a normalized mail message.
 type Email struct {
 	ID       string    `json:"id"`
@@ -146,3 +150,34 @@ type Meetings interface {
 // ErrNoTranscript means the meeting has no transcript (not recorded, or the
 // user isn't the organizer / wasn't given access).
 var ErrNoTranscript = errors.New("no transcript found for this meeting")
+
+// Channel is a chat channel or DM.
+type Channel struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsPrivate bool   `json:"is_private"`
+	IsIM      bool   `json:"is_im"`
+}
+
+// ChatMessage is a normalized chat message.
+type ChatMessage struct {
+	Channel     string    `json:"channel"`
+	ChannelName string    `json:"channel_name,omitempty"`
+	User        string    `json:"user"`
+	Text        string    `json:"text"`
+	TS          string    `json:"ts"`
+	ThreadTS    string    `json:"thread_ts,omitempty"`
+	Time        time.Time `json:"time"`
+	Permalink   string    `json:"permalink,omitempty"`
+}
+
+// Chat is the Slack-like contract. Calls run as the signed-in user.
+type Chat interface {
+	ListChannels(ctx context.Context) ([]Channel, error)
+	History(ctx context.Context, channel string, limit int) ([]ChatMessage, error)
+	Search(ctx context.Context, query string, limit int) ([]ChatMessage, error)
+	Mentions(ctx context.Context, limit int) ([]ChatMessage, error)
+	// Post sends text to a channel (name or ID), optionally in a thread, and
+	// returns the message timestamp.
+	Post(ctx context.Context, channel, text, threadTS string) (string, error)
+}

@@ -247,8 +247,12 @@ func (s *service) Overview(ctx context.Context) (Overview, error) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	fail := func(key string, err error) {
+		msg := err.Error()
+		if errors.Is(err, provider.ErrReauth) {
+			msg = "Your Google access expired. Sign out and sign in again."
+		}
 		mu.Lock()
-		ov.Errors[key] = err.Error()
+		ov.Errors[key] = msg
 		mu.Unlock()
 	}
 	wg.Add(2)

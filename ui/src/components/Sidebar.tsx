@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LogOut, Monitor, Moon, PenSquare, Sun, Trash2, X } from "lucide-react";
+import { Hash, LogOut, Monitor, Moon, PenSquare, Sun, Trash2, X } from "lucide-react";
 import { api, type ConversationSummary, type Me, type Status } from "../api";
 import { dayBucket } from "../lib/format";
 import { Avatar, IconButton, Mark } from "./ui";
@@ -152,6 +152,7 @@ export function Sidebar({
             <ThemeIcon size={14} />
           </IconButton>
         </div>
+        <SlackRow />
         <div className="mt-2.5 flex items-center gap-3 px-1 text-[12px] text-ink-3">
           <StatusRow ok={!!status?.ai_configured} label={status?.ai_configured ? status.model : "No AI model"} />
           {status?.demo_mode && <span className="rounded-full bg-clay-soft px-1.5 text-clay">Demo</span>}
@@ -184,6 +185,42 @@ function StatusRow({ ok, label }: { ok: boolean; label: string }) {
     <div className="flex min-w-0 items-center gap-1.5">
       <span className={`size-1.5 shrink-0 rounded-full ${ok ? "bg-forest" : "bg-line-strong"}`} />
       <span className="truncate">{label}</span>
+    </div>
+  );
+}
+
+// Slack connection: shown only when the server has a Slack app configured.
+function SlackRow() {
+  const qc = useQueryClient();
+  const conns = useQuery({ queryKey: ["connections"], queryFn: api.connections });
+  const slack = conns.data?.find((c) => c.provider === "slack");
+  const disconnect = useMutation({
+    mutationFn: () => api.disconnect("slack"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["connections"] }),
+  });
+  if (!slack?.configured) return null;
+  return (
+    <div className="mt-2.5 flex items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-2">
+      <Hash size={15} className={slack.connected ? "text-forest" : "text-ink-3"} />
+      <div className="min-w-0 flex-1 leading-tight">
+        <div className="text-[13px] font-medium text-ink">Slack</div>
+        <div className="truncate text-[11.5px] text-ink-3">{slack.connected ? slack.label || "Connected" : "Not connected"}</div>
+      </div>
+      {slack.connected ? (
+        slack.label === "Demo workspace" ? null : (
+          <button
+            onClick={() => disconnect.mutate()}
+            disabled={disconnect.isPending}
+            className="text-[12px] text-ink-3 hover:text-danger"
+          >
+            Disconnect
+          </button>
+        )
+      ) : (
+        <a href="/auth/slack/start" className="rounded-md bg-forest px-2 py-1 text-[12px] font-medium text-on-forest hover:bg-forest-hover">
+          Connect
+        </a>
+      )}
     </div>
   );
 }

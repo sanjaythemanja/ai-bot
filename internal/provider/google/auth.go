@@ -6,6 +6,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -131,7 +132,26 @@ func (a *Auth) HTTPClient(ctx context.Context) (*http.Client, error) {
 		last:   t,
 		base:   a.cfg.TokenSource(context.Background(), t),
 	}
-	return oauth2.NewClient(ctx, oauth2.ReuseTokenSource(t, src)), nil
+	hc := oauth2.NewClient(ctx, oauth2.ReuseTokenSource(t, src))
+	hc.Transport = reauthTransport{base: hc.Transport}
+	return hc, nil
+}
+
+// reauthTransport turns a rejected token refresh into provider.ErrReauth,
+// so callers show "sign in again" instead of a raw OAuth error. This is
+// what happens weekly while the OAuth app is in Testing mode.
+type reauthTransport struct{ base http.RoundTripper }
+
+func (t reauthTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	res, err := t.base.RoundTrip(r)
+	var re *oauth2.RetrieveError
+	if err != nil && errors.As(err, &re) {
+		switch re.ErrorCode {
+		case "invalid_grant", "unauthorized_client", "invalid_client":
+			return nil, provider.ErrReauth
+		}
+	}
+	return res, err
 }
 
 // savingSource writes the token back whenever it is refreshed.

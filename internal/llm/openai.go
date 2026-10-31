@@ -118,7 +118,7 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 		if out.Error != nil && out.Error.Message != "" {
 			msg = out.Error.Message
 		}
-		return Response{}, fmt.Errorf("llm API error %d: %s", res.StatusCode, truncate(msg, 300))
+		return Response{}, &APIError{Status: res.StatusCode, Message: truncate(msg, 300)}
 	}
 	if len(out.Choices) == 0 {
 		return Response{}, fmt.Errorf("llm API returned no choices")
@@ -131,7 +131,7 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 
 	// Native keeps the raw message so provider-specific fields (for example
 	// Gemini's thought signatures on tool calls) are sent back untouched.
-	msg := Message{Role: RoleAssistant, Native: &Native{Kind: "openai", Raw: choice.Message}}
+	msg := Message{Role: RoleAssistant, Native: &Native{Kind: "openai", Model: c.model, Raw: choice.Message}}
 	if wm.Content != nil {
 		msg.Text = *wm.Content
 	}
@@ -159,7 +159,7 @@ func (c *OpenAI) Complete(ctx context.Context, req Request) (Response, error) {
 
 // toWire converts a neutral message; tool results become one "tool" message each.
 func (c *OpenAI) toWire(m Message) []any {
-	if m.Native != nil && m.Native.Kind == "openai" {
+	if m.Native.replayable("openai", c.model) {
 		return []any{m.Native.Raw}
 	}
 	var out []any

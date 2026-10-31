@@ -144,3 +144,28 @@ func TestPostgresUsersSessionsActions(t *testing.T) {
 		t.Fatal("other user sees actions")
 	}
 }
+
+func TestPostgresConnections(t *testing.T) {
+	pg := openTestPG(t)
+	ctx := context.Background()
+	suffix := time.Now().Format("150405.000000")
+	u, _ := pg.UpsertUser(ctx, "test-c-"+suffix, "c-"+suffix+"@example.com", "C")
+	t.Cleanup(func() { _, _ = pg.pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, u.ID) })
+
+	if _, err := pg.ConnectionSecret(ctx, u.ID, "slack"); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("expected not connected, got %v", err)
+	}
+	_ = pg.SaveConnection(ctx, u.ID, "slack", "Acme", []byte("sealed-1"))
+	_ = pg.SaveConnection(ctx, u.ID, "slack", "Acme 2", []byte("sealed-2")) // reconnect replaces
+	if b, err := pg.ConnectionSecret(ctx, u.ID, "slack"); err != nil || string(b) != "sealed-2" {
+		t.Fatalf("secret: %q %v", b, err)
+	}
+	list, _ := pg.ListConnections(ctx, u.ID)
+	if len(list) != 1 || list[0].Label != "Acme 2" {
+		t.Fatalf("list: %+v", list)
+	}
+	_ = pg.DeleteConnection(ctx, u.ID, "slack")
+	if _, err := pg.ConnectionSecret(ctx, u.ID, "slack"); !errors.Is(err, ErrNotConnected) {
+		t.Fatal("connection not deleted")
+	}
+}

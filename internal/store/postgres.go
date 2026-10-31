@@ -234,6 +234,42 @@ func (p *Postgres) DeleteSession(ctx context.Context, tokenHash []byte) error {
 	return err
 }
 
+// ---------- connections ----------
+
+func (p *Postgres) SaveConnection(ctx context.Context, userID, provider, label string, sealed []byte) error {
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO connections (user_id, provider, label, secret) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (user_id, provider) DO UPDATE SET label = EXCLUDED.label, secret = EXCLUDED.secret, created_at = now()`,
+		userID, provider, label, sealed)
+	return err
+}
+
+func (p *Postgres) ConnectionSecret(ctx context.Context, userID, provider string) ([]byte, error) {
+	var b []byte
+	err := p.pool.QueryRow(ctx, `SELECT secret FROM connections WHERE user_id = $1 AND provider = $2`, userID, provider).Scan(&b)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotConnected
+	}
+	return b, err
+}
+
+func (p *Postgres) ListConnections(ctx context.Context, userID string) ([]Connection, error) {
+	rows, err := p.pool.Query(ctx, `SELECT provider, label, created_at FROM connections WHERE user_id = $1 ORDER BY provider`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Connection, error) {
+		var c Connection
+		err := r.Scan(&c.Provider, &c.Label, &c.CreatedAt)
+		return c, err
+	})
+}
+
+func (p *Postgres) DeleteConnection(ctx context.Context, userID, provider string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM connections WHERE user_id = $1 AND provider = $2`, userID, provider)
+	return err
+}
+
 // ---------- actions ----------
 
 // PGActions is the Actions view of Postgres.
@@ -323,7 +359,8 @@ func (v PGActions) Finish(ctx context.Context, userID, id, status, result, errMs
 }
 
 var (
-	_ Store   = (*Postgres)(nil)
-	_ Users   = (*Postgres)(nil)
-	_ Actions = PGActions{}
+	_ Store       = (*Postgres)(nil)
+	_ Users       = (*Postgres)(nil)
+	_ Connections = (*Postgres)(nil)
+	_ Actions     = PGActions{}
 )

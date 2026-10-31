@@ -29,6 +29,33 @@ For a different OpenAI-compatible service, also set `LLM_BASE_URL`. For Claude, 
 - **Today panel**: a raw snapshot of unread mail and today's events. No AI involved.
 - **Approval queue**: by default `send_email` and `create_event` are only *queued*, and nothing leaves your account until you click **Approve**. You can turn this off in `config.yaml`. `draft_email` saves a draft directly, since a draft sends nothing.
 
+## Plugins
+
+Every integration is a plugin (`internal/plugins/*`), and the core engine (`internal/assistant/tools.go`) never imports one. A plugin implements `plugin.Plugin` (a name and tools), plus only the optional capabilities that fit it:
+
+| Interface | Purpose | Gmail | Calendar | Meet | Slack |
+|---|---|---|---|---|---|
+| `Plugin` | tools (reads run now; writes return a `Proposal`) | ✓ | ✓ | ✓ | ✓ |
+| `Executor` | performs approved proposals of its kinds | ✓ | ✓ | – | ✓ |
+| `Editor` | edits a proposal while it awaits approval | ✓ | ✓ | – | ✓ |
+| `Deduper` | blocks near-duplicate pending proposals | ✓ | ✓ | – | ✓ |
+| `Guide` | adds its own instructions to the AI's prompt | ✓ | ✓ | ✓ | ✓ |
+
+The engine handles everything shared: approval (`require_approval`), the action queue, duplicate checks, `edit_pending_action`/`cancel_pending_action`, and routing an approved action to its plugin. **To add an integration:** write a package implementing the interfaces above and add it to the list in `cmd/server/main.go`. Nothing else changes.
+
+### Slack
+
+Each user connects **their own** Slack. The token is stored encrypted per user in `connections`, and the assistant reads and posts **as that user**. Tools: `list_slack_channels`, `read_slack_channel`, `search_slack`, `slack_mentions`, and `post_slack_message`, which queues for approval and can be edited or duplicate-checked like an email.
+
+Setup:
+1. Create an app at **api.slack.com/apps** (From scratch) in your workspace.
+2. Under **OAuth & Permissions**, add the redirect URL `https://<your-app>/auth/slack/callback`.
+3. Under **User Token Scopes**, add: `channels:read groups:read im:read mpim:read channels:history groups:history im:history mpim:history users:read search:read chat:write`.
+4. Copy the **Client ID** and **Client Secret** into `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET`, then restart.
+5. In the app, click **Connect** next to Slack in the sidebar.
+
+Slack requires an `https://` redirect URL, so connect from the deployed app (or an HTTPS tunnel). Demo mode includes a sample Slack workspace.
+
 ## Working with colleagues (Google Workspace)
 
 | You ask | What the bot uses | Needs |

@@ -24,9 +24,15 @@ import (
 	"github.com/sanjayrj/ai-bot/internal/config"
 	"github.com/sanjayrj/ai-bot/internal/httpx"
 	"github.com/sanjayrj/ai-bot/internal/llm"
+	"github.com/sanjayrj/ai-bot/internal/plugin"
+	calendarplugin "github.com/sanjayrj/ai-bot/internal/plugins/calendar"
+	gmailplugin "github.com/sanjayrj/ai-bot/internal/plugins/gmail"
+	meetplugin "github.com/sanjayrj/ai-bot/internal/plugins/meet"
+	slackplugin "github.com/sanjayrj/ai-bot/internal/plugins/slack"
 	"github.com/sanjayrj/ai-bot/internal/provider"
 	"github.com/sanjayrj/ai-bot/internal/provider/google"
 	"github.com/sanjayrj/ai-bot/internal/provider/mock"
+	slackclient "github.com/sanjayrj/ai-bot/internal/provider/slack"
 	"github.com/sanjayrj/ai-bot/internal/secure"
 	"github.com/sanjayrj/ai-bot/internal/store"
 	"github.com/sanjayrj/ai-bot/web"
@@ -44,10 +50,11 @@ func main() {
 
 	// --- Storage: users, sessions, conversations, actions ---
 	var (
-		convs     store.Store   = store.NewMemory()
-		users     store.Users   = convs.(*store.Memory)
-		actions   store.Actions = store.ActionsView{Memory: convs.(*store.Memory)}
-		storeKind               = "memory"
+		convs     store.Store       = store.NewMemory()
+		users     store.Users       = convs.(*store.Memory)
+		conns     store.Connections = convs.(*store.Memory)
+		actions   store.Actions     = store.ActionsView{Memory: convs.(*store.Memory)}
+		storeKind                   = "memory"
 	)
 	if cfg.DatabaseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -57,7 +64,7 @@ func main() {
 			_ = level.Error(logger).Log("msg", "database", "err", err)
 			os.Exit(1)
 		}
-		convs, users, actions, storeKind = pg, pg, pg.Actions(), "postgres"
+		convs, users, conns, actions, storeKind = pg, pg, pg, pg.Actions(), "postgres"
 	} else {
 		_ = level.Warn(logger).Log("msg", "DATABASE_URL not set: users, chats and actions are kept in memory and lost on restart")
 	}
@@ -69,6 +76,7 @@ func main() {
 		AgentToken: cfg.AgentAPIToken, AgentEmail: cfg.AgentUserEmail,
 	}
 	var vault google.TokenStore
+	connVault := auth.ConnVault{Conns: conns} // Box is added below when APP_SECRET is set
 	if cfg.DemoMode {
 		// Demo mode signs everyone in as one sample user; no Google needed.
 		demo, err := users.UpsertUser(context.Background(), "demo", "demo@example.com", "Demo User")
@@ -84,6 +92,7 @@ func main() {
 			os.Exit(1)
 		}
 		vault = auth.Vault{Users: users, Box: box}
+		connVault.Box = box
 	}
 	gauth := google.NewAuth(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL, vault)
 	allow := auth.ParseAllowlist(cfg.AllowedEmails)
@@ -96,10 +105,15 @@ func main() {
 		mail provider.Mail     = google.NewGmail(gauth)
 		cal  provider.Calendar = google.NewCalendar(gauth)
 		meet provider.Meetings = google.NewMeet(gauth)
+		chat provider.Chat     // nil unless Slack is configured (or demo)
 	)
+	slackOAuth := authhttp.SlackOAuth{ClientID: cfg.SlackClientID, ClientSecret: cfg.SlackClientSecret, RedirectURL: cfg.SlackRedirectURL}
+	if slackOAuth.Configured() && !cfg.DemoMode {
+		chat = slackclient.New(connVault)
+	}
 	if cfg.DemoMode {
 		ws := mock.New(time.Now().In(cfg.Location))
-		mail, cal, meet = ws.Mail(), ws.Calendar(), ws.Meetings()
+		mail, cal, meet, chat = ws.Mail(), ws.Calendar(), ws.Meetings(), ws.Chat()
 		_ = level.Info(logger).Log("msg", "DEMO_MODE on: sample Gmail/Calendar data, signed in as the demo user")
 	}
 
@@ -114,7 +128,16 @@ func main() {
 	}
 
 	// --- Service + go-kit middleware stack ---
-	tools := assistant.NewToolbox(mail, cal, meet, actions, cfg.Location, cfg.RequireApproval)
+	// Integrations are plugins: add one here and nothing else in the core changes.
+	plugins := []plugin.Plugin{
+		gmailplugin.New(mail),
+		calendarplugin.New(cal, cfg.Location),
+		meetplugin.New(meet, cal, cfg.Location),
+	}
+	if chat != nil {
+		plugins = append(plugins, slackplugin.New(chat))
+	}
+	tools := assistant.NewToolbox(actions, cfg.RequireApproval, plugins...)
 	agent := assistant.NewAgent(model, tools, cfg.Location, log.With(logger, "component", "agent"))
 	agent.LogInputs = cfg.LogToolInputs
 
@@ -139,6 +162,11 @@ func main() {
 	// --- HTTP ---
 	mux := http.NewServeMux()
 	assistant.RegisterHTTPRoutes(mux, endpoints, log.With(logger, "component", "http"))
+	demoSlack := ""
+	if cfg.DemoMode {
+		demoSlack = "Demo workspace"
+	}
+	authhttp.RegisterConnections(mux, authhttp.ConnDeps{Slack: slackOAuth, Sessions: sessions, Vault: connVault, Logger: log.With(logger, "component", "connections"), DemoLabel: demoSlack})
 	authhttp.Register(mux, authhttp.Deps{Google: gauth, Sessions: sessions, Users: users, Allowlist: allow, Logger: log.With(logger, "component", "auth")})
 	mux.Handle("GET /metrics", httpx.ProtectMetrics(cfg.MetricsToken, promhttp.Handler()))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
@@ -155,7 +183,7 @@ func main() {
 
 	go func() {
 		_ = level.Info(logger).Log("msg", "listening", "env", cfg.Env, "addr", cfg.BaseURL, "ai_provider", cfg.LLM.Provider,
-			"model", cfg.LLM.Model, "ai", model != nil, "google_oauth", gauth.Configured(), "require_approval", cfg.RequireApproval, "storage", storeKind)
+			"model", cfg.LLM.Model, "fallback_models", strings.Join(cfg.LLM.Fallbacks, ","), "ai", model != nil, "google_oauth", gauth.Configured(), "require_approval", cfg.RequireApproval, "storage", storeKind, "plugins", strings.Join(tools.Plugins(), ","))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			_ = level.Error(logger).Log("msg", "server", "err", err)
 			os.Exit(1)
@@ -176,7 +204,7 @@ func main() {
 // stops other sites from approving actions via a hidden form (CSRF).
 func jsonOnlyPOST(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		guarded := strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/auth/logout"
+		guarded := strings.HasPrefix(r.URL.Path, "/api/") || (r.URL.Path == "/auth/logout" || r.URL.Path == "/auth/slack/disconnect")
 		if r.Method == http.MethodPost && guarded &&
 			!strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 			http.Error(w, `{"error":"Content-Type must be application/json"}`, http.StatusUnsupportedMediaType)

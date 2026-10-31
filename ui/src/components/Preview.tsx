@@ -2,7 +2,7 @@
 // will be sent, a calendar entry as it will appear, or a before/after view
 // of a meeting change.
 import { useState } from "react";
-import { ArrowDown, MapPin, Reply, Users } from "lucide-react";
+import { ArrowDown, Hash, MapPin, Reply, Users } from "lucide-react";
 import type { Action } from "../api";
 import { Avatar } from "./ui";
 
@@ -43,6 +43,8 @@ export function ActionSnapshot({ a }: { a: Action }) {
       return p.before ? <EventDiff before={p.before} update={p.update ?? {}} /> : <Plain text={a.summary} />;
     case "delete_event":
       return p.event ? <EventSnapshot ev={p.event} removing /> : <Plain text={a.summary} />;
+    case "slack_post":
+      return <SlackSnapshot post={p as SlackPost} />;
     default:
       return <Plain text={a.summary} />;
   }
@@ -50,6 +52,33 @@ export function ActionSnapshot({ a }: { a: Action }) {
 
 function Plain({ text }: { text: string }) {
   return <p className="text-[13px] text-ink">{text}</p>;
+}
+
+// ---------- Slack ----------
+
+type SlackPost = { channel: string; channel_name?: string; text: string; thread_ts?: string };
+
+function SlackSnapshot({ post }: { post: SlackPost }) {
+  const name = post.channel_name || post.channel;
+  const dm = name.startsWith("dm:");
+  return (
+    <div className="overflow-hidden rounded-xl border border-line bg-paper">
+      <div className="flex items-center gap-1.5 border-b border-line px-3 py-2 text-[12.5px] font-semibold text-ink">
+        {dm ? <span className="text-ink-3">DM</span> : <Hash size={13} className="text-ink-3" />}
+        {dm ? name.slice(3) : name.replace(/^#/, "")}
+        {post.thread_ts && <span className="ml-1 rounded bg-sunken px-1.5 text-[11px] font-normal text-ink-3">thread reply</span>}
+      </div>
+      <div className="flex gap-2.5 px-3 py-2.5">
+        <Avatar name="You" size={28} />
+        <div className="min-w-0">
+          <div className="text-[12.5px] font-semibold text-ink">
+            You <span className="font-normal text-ink-3">· posting as you</span>
+          </div>
+          <p className="mt-0.5 text-[13px] leading-relaxed whitespace-pre-wrap text-ink">{post.text}</p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ---------- Email ----------

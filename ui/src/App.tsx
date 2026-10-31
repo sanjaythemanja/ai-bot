@@ -60,12 +60,33 @@ export default function App() {
       </div>
     );
   }
-  // Clean the ?auth_error= left over from a failed attempt.
-  if (window.location.search) window.history.replaceState(null, "", "/");
   return <Workspace me={me.data!} />;
 }
 
+const FLASH: Record<string, { tone: "ok" | "err"; text: string }> = {
+  "connected=slack": { tone: "ok", text: "Slack connected. Try: “What did I miss in Slack today?”" },
+  "connect_error=slack_denied": { tone: "err", text: "Slack connection was cancelled." },
+  "connect_error=slack_expired": { tone: "err", text: "That Slack link expired. Please try connecting again." },
+  "connect_error=slack_failed": { tone: "err", text: "Couldn't connect Slack. Please try again." },
+};
+
+// Reads a one-time notice from the URL (after OAuth redirects) and cleans it.
+function useFlash() {
+  const [flash, setFlash] = useState<{ tone: "ok" | "err"; text: string } | null>(
+    () => FLASH[window.location.search.replace(/^\?/, "")] ?? null,
+  );
+  useEffect(() => {
+    if (window.location.search) window.history.replaceState(null, "", "/");
+    if (flash) {
+      const t = setTimeout(() => setFlash(null), 6000);
+      return () => clearTimeout(t);
+    }
+  }, [flash]);
+  return flash;
+}
+
 function Workspace({ me }: { me: Me }) {
+  const flash = useFlash();
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, refetchInterval: 60_000 });
   const convs = useQuery({ queryKey: ["conversations"], queryFn: api.conversations });
 
@@ -135,6 +156,16 @@ function Workspace({ me }: { me: Me }) {
             <Menu size={18} />
           </IconButton>
           <h1 className="min-w-0 flex-1 truncate text-[15px] font-medium text-ink">{title}</h1>
+          {flash && (
+            <span
+              role="status"
+              className={`hidden truncate rounded-full px-3 py-1 text-[12.5px] font-medium sm:inline ${
+                flash.tone === "ok" ? "bg-forest-soft text-forest" : "bg-danger-soft text-danger"
+              }`}
+            >
+              {flash.text}
+            </span>
+          )}
           {s?.demo_mode && (
             <span className="rounded-full bg-clay-soft px-2.5 py-1 text-[12px] font-medium text-clay">Demo data</span>
           )}

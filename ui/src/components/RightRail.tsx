@@ -9,6 +9,7 @@ import {
   Check,
   ChevronDown,
   FileX,
+  Hash,
   Mail,
   MapPin,
   RefreshCw,
@@ -215,6 +216,7 @@ const KIND: Record<string, { icon: typeof Mail; label: string }> = {
   create_event: { icon: CalendarPlus, label: "New event" },
   update_event: { icon: CalendarClock, label: "Change event" },
   delete_event: { icon: CalendarX, label: "Cancel event" },
+  slack_post: { icon: Hash, label: "Slack message" },
 };
 
 function ActionCard({ a }: { a: Action }) {

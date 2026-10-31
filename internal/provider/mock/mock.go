@@ -23,6 +23,8 @@ type Workspace struct {
 	sent   []provider.OutgoingEmail
 	others map[string][]provider.Event
 	shared map[string]bool
+	chans  []provider.Channel
+	msgs   []provider.ChatMessage
 	seq    int
 }
 
@@ -72,6 +74,14 @@ func New(now time.Time) *Workspace {
 		},
 	}
 	w.shared = map[string]bool{"sara@example.com": true} // Marcus shares free/busy only
+
+	w.chans = []provider.Channel{{ID: "C1", Name: "exec-team"}, {ID: "C2", Name: "incidents"}, {ID: "D1", Name: "dm:Sara", IsIM: true}}
+	w.msgs = []provider.ChatMessage{
+		{Channel: "C2", ChannelName: "incidents", User: "oncall-bot", Text: "SEV2: elevated 5xx on checkout API (eu-west). Mitigation in progress.", TS: "1000.1", Time: now.Add(-40 * time.Minute)},
+		{Channel: "C2", ChannelName: "incidents", User: "Sara", Text: "<@me> heads up — this may affect a key customer. Update in 30 min.", TS: "1000.2", Time: now.Add(-35 * time.Minute)},
+		{Channel: "C1", ChannelName: "exec-team", User: "Marcus", Text: "<@me> can you confirm the hiring plan numbers for the board deck by Wednesday?", TS: "1000.3", Time: now.Add(-3 * time.Hour)},
+		{Channel: "D1", ChannelName: "dm:Sara", User: "Sara", Text: "Can we move our 1:1 to the afternoon?", TS: "1000.4", Time: now.Add(-25 * time.Minute)},
+	}
 	return w
 }
 
@@ -388,4 +398,88 @@ func (m meetView) Transcript(_ context.Context, code string) (provider.Transcrip
 		line(11, "Marcus Lee", "Decision: CEO joins the BigCustomer call next week. Marcus owns scheduling."),
 		line(13, "Lena (CFO)", "Action: Lena sends numbers to Marcus by Wednesday so the deck is final Thursday."),
 	}}, nil
+}
+
+// Chat returns the Slack view of the workspace.
+func (w *Workspace) Chat() provider.Chat { return chatView{w} }
+
+// Posted returns messages "posted" by the user in demo mode (for tests).
+func (w *Workspace) Posted() []provider.ChatMessage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []provider.ChatMessage
+	for _, m := range w.msgs {
+		if m.User == "you" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+type chatView struct{ w *Workspace }
+
+func (c chatView) ListChannels(context.Context) ([]provider.Channel, error) {
+	c.w.mu.Lock()
+	defer c.w.mu.Unlock()
+	return append([]provider.Channel(nil), c.w.chans...), nil
+}
+
+func (c chatView) channel(name string) (provider.Channel, error) {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "#")
+	for _, ch := range c.w.chans {
+		if ch.ID == name || strings.EqualFold(ch.Name, name) {
+			return ch, nil
+		}
+	}
+	return provider.Channel{}, fmt.Errorf("no channel %q among the user's channels", name)
+}
+
+func (c chatView) History(_ context.Context, channel string, limit int) ([]provider.ChatMessage, error) {
+	c.w.mu.Lock()
+	defer c.w.mu.Unlock()
+	ch, err := c.channel(channel)
+	if err != nil {
+		return nil, err
+	}
+	var out []provider.ChatMessage
+	for i := len(c.w.msgs) - 1; i >= 0; i-- {
+		if c.w.msgs[i].Channel == ch.ID {
+			out = append(out, c.w.msgs[i])
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (c chatView) Search(_ context.Context, query string, limit int) ([]provider.ChatMessage, error) {
+	c.w.mu.Lock()
+	defer c.w.mu.Unlock()
+	var out []provider.ChatMessage
+	for _, m := range c.w.msgs {
+		if strings.Contains(strings.ToLower(m.Text+" "+m.User), strings.ToLower(query)) {
+			out = append(out, m)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (c chatView) Mentions(ctx context.Context, limit int) ([]provider.ChatMessage, error) {
+	return c.Search(ctx, "<@me>", limit)
+}
+
+func (c chatView) Post(_ context.Context, channel, text, threadTS string) (string, error) {
+	c.w.mu.Lock()
+	defer c.w.mu.Unlock()
+	ch, err := c.channel(channel)
+	if err != nil {
+		return "", err
+	}
+	ts := c.w.nextID("ts")
+	c.w.msgs = append(c.w.msgs, provider.ChatMessage{Channel: ch.ID, ChannelName: ch.Name, User: "you", Text: text, TS: ts, ThreadTS: threadTS, Time: time.Now()})
+	return ts, nil
 }

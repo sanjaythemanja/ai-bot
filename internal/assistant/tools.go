@@ -6,59 +6,89 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"time"
+	"strings"
 
 	"github.com/sanjayrj/ai-bot/internal/llm"
+	"github.com/sanjayrj/ai-bot/internal/plugin"
 	"github.com/sanjayrj/ai-bot/internal/provider"
 	"github.com/sanjayrj/ai-bot/internal/store"
 )
 
-// tool couples a model-neutral tool definition with its Go implementation.
-type tool struct {
-	def llm.ToolSpec
-	run func(ctx context.Context, input json.RawMessage) (any, error)
-}
-
-// Toolbox exposes the integrations to the model. Reads run immediately;
-// writes that leave the user's account become Actions, which either wait for
-// approval or (with requireApproval off) run at once and are kept as a log.
-//
-// Tools are registered in tools_mail.go, tools_calendar.go and
-// tools_actions.go; writes are carried out in execute.go.
+// Toolbox is the plugin engine. It knows nothing about any integration: it
+// collects tools from plugins, runs reads, turns writes into Actions (which
+// wait for approval unless requireApproval is off), and routes approved
+// actions to the plugin that executes their kind.
 type Toolbox struct {
-	mail            provider.Mail
-	cal             provider.Calendar
-	meet            provider.Meetings
 	actions         store.Actions
-	loc             *time.Location
 	requireApproval bool
-	tools           map[string]tool
-	order           []string
+
+	plugins   []plugin.Plugin
+	tools     map[string]plugin.Tool
+	order     []string
+	executors map[string]plugin.Executor // by action kind
+	editors   map[string]plugin.Editor   // by action kind
+	dedupers  map[string]plugin.Deduper  // by action kind
 }
 
-func NewToolbox(mail provider.Mail, cal provider.Calendar, meet provider.Meetings, actions store.Actions, loc *time.Location, requireApproval bool) *Toolbox {
-	t := &Toolbox{mail: mail, cal: cal, meet: meet, actions: actions, loc: loc, requireApproval: requireApproval, tools: map[string]tool{}}
-	t.registerMail()
-	t.registerCalendar()
-	t.registerPeople()
-	t.registerActions()
+// NewToolbox registers plugins. Tool names and action kinds must be unique.
+func NewToolbox(actions store.Actions, requireApproval bool, plugins ...plugin.Plugin) *Toolbox {
+	t := &Toolbox{
+		actions: actions, requireApproval: requireApproval,
+		tools:     map[string]plugin.Tool{},
+		executors: map[string]plugin.Executor{},
+		editors:   map[string]plugin.Editor{},
+		dedupers:  map[string]plugin.Deduper{},
+	}
+	for _, p := range plugins {
+		t.register(p)
+	}
+	for _, tl := range t.coreTools() {
+		t.addTool(tl)
+	}
 	return t
+}
+
+func (t *Toolbox) register(p plugin.Plugin) {
+	t.plugins = append(t.plugins, p)
+	for _, tl := range p.Tools() {
+		t.addTool(tl)
+	}
+	if ex, ok := p.(plugin.Executor); ok {
+		for _, k := range ex.Kinds() {
+			if _, dup := t.executors[k]; dup {
+				panic(fmt.Sprintf("action kind %q registered twice", k))
+			}
+			t.executors[k] = ex
+			if ed, ok := p.(plugin.Editor); ok {
+				t.editors[k] = ed
+			}
+			if dd, ok := p.(plugin.Deduper); ok {
+				t.dedupers[k] = dd
+			}
+		}
+	}
+}
+
+func (t *Toolbox) addTool(tl plugin.Tool) {
+	if _, dup := t.tools[tl.Name]; dup {
+		panic(fmt.Sprintf("tool %q registered twice", tl.Name))
+	}
+	if tl.Write {
+		tl.Description = t.writeDesc(tl.Description)
+	}
+	t.tools[tl.Name] = tl
+	t.order = append(t.order, tl.Name)
 }
 
 // ErrUnknownTool is returned for a tool name that is not registered.
 var ErrUnknownTool = errors.New("unknown tool")
 
-// writeTools are the tools that change something outside the app.
-var writeTools = map[string]bool{
-	"send_email": true, "send_draft": true, "delete_draft": true,
-	"create_event": true, "update_event": true, "delete_event": true,
-}
-
 // Specs returns the tool list in a stable order (keeps prompts cacheable).
 func (t *Toolbox) Specs() []llm.ToolSpec {
 	out := make([]llm.ToolSpec, 0, len(t.order))
 	for _, name := range t.order {
-		out = append(out, t.tools[name].def)
+		tl := t.tools[name]
+		out = append(out, llm.ToolSpec{Name: tl.Name, Description: tl.Description, Properties: tl.Properties, Required: tl.Required})
 	}
 	return out
 }
@@ -69,10 +99,22 @@ func (t *Toolbox) Call(ctx context.Context, name string, input json.RawMessage) 
 	if !ok {
 		return "", fmt.Errorf("%w %q", ErrUnknownTool, name)
 	}
-	res, err := tl.run(ctx, input)
+	var res any
+	var err error
+	if tl.Write {
+		var p plugin.Proposal
+		if p, err = tl.Propose(ctx, input); err == nil {
+			res, err = t.queue(ctx, p)
+		}
+	} else {
+		res, err = tl.Run(ctx, input)
+	}
 	if err != nil {
+		if errors.Is(err, provider.ErrReauth) {
+			return "", provider.ErrReauth // clean, actionable message for the model and user
+		}
 		if errors.Is(err, provider.ErrNotConnected) {
-			return "", fmt.Errorf("%w: ask the user to connect it from the sidebar", err)
+			return "", fmt.Errorf("%w: ask the user to connect it", err)
 		}
 		return "", err
 	}
@@ -87,52 +129,32 @@ func (t *Toolbox) Call(ctx context.Context, name string, input json.RawMessage) 
 func (t *Toolbox) RequiresApproval() bool { return t.requireApproval }
 
 // NeedsApproval reports whether the named tool will wait for the user.
-func (t *Toolbox) NeedsApproval(name string) bool { return t.requireApproval && writeTools[name] }
-
-type prop = map[string]any
-
-func (t *Toolbox) add(name, desc string, props prop, required []string, run func(context.Context, json.RawMessage) (any, error)) {
-	t.tools[name] = tool{
-		def: llm.ToolSpec{Name: name, Description: desc, Properties: props, Required: required},
-		run: run,
-	}
-	t.order = append(t.order, name)
+func (t *Toolbox) NeedsApproval(name string) bool {
+	return t.requireApproval && t.tools[name].Write
 }
 
-func str(d string) prop { return prop{"type": "string", "description": d} }
-func num(d string) prop { return prop{"type": "integer", "description": d} }
-func strs(d string) prop {
-	return prop{"type": "array", "items": prop{"type": "string"}, "description": d}
-}
-
-func merge(ps ...prop) prop {
-	out := prop{}
-	for _, p := range ps {
-		for k, v := range p {
-			out[k] = v
+// Guidance collects plugin-specific instructions for the system prompt.
+func (t *Toolbox) Guidance() string {
+	var parts []string
+	for _, p := range t.plugins {
+		if g, ok := p.(plugin.Guide); ok {
+			if s := strings.TrimSpace(g.Guidance()); s != "" {
+				parts = append(parts, s)
+			}
 		}
 	}
+	return strings.Join(parts, "\n")
+}
+
+// Plugins lists registered plugin names (for status displays).
+func (t *Toolbox) Plugins() []string {
+	out := make([]string, 0, len(t.plugins))
+	for _, p := range t.plugins {
+		out = append(out, p.Name())
+	}
+	sort.Strings(out)
 	return out
 }
-
-func decode[T any](raw json.RawMessage) (T, error) {
-	var v T
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return v, fmt.Errorf("invalid tool input: %w", err)
-	}
-	return v, nil
-}
-
-func (t *Toolbox) parseTime(s string) (time.Time, error) {
-	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02"} {
-		if v, err := time.ParseInLocation(layout, s, t.loc); err == nil {
-			return v, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("cannot parse time %q; use RFC 3339 like 2026-01-02T15:04:05-07:00", s)
-}
-
-func (t *Toolbox) fmtTime(v time.Time) string { return v.In(t.loc).Format("Mon Jan 2 15:04") }
 
 func (t *Toolbox) writeDesc(what string) string {
 	if t.requireApproval {
@@ -141,17 +163,23 @@ func (t *Toolbox) writeDesc(what string) string {
 	return what + " This runs immediately and cannot be undone, so only call it once the user has clearly asked for it."
 }
 
-func (t *Toolbox) queue(ctx context.Context, kind ActionKind, summary string, payload any) (any, error) {
+// queue stores a proposal as an Action and, in auto mode, runs it at once.
+func (t *Toolbox) queue(ctx context.Context, p plugin.Proposal) (any, error) {
+	if _, ok := t.executors[p.Kind]; !ok {
+		return nil, fmt.Errorf("no plugin can execute %q", p.Kind)
+	}
 	uid, err := userID(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if t.requireApproval {
-		if dup, ok := t.duplicateOf(ctx, uid, kind, payload); ok {
-			return nil, duplicateError(dup)
+		if dup, ok := t.duplicateOf(ctx, uid, p); ok {
+			return nil, fmt.Errorf("a matching action is already waiting for approval (action_id %s: %s). "+
+				"To change it, call edit_pending_action with action_id %s. "+
+				"If it should be replaced entirely, call cancel_pending_action on it first", dup.ID, dup.Summary, dup.ID)
 		}
 	}
-	a, err := t.actions.Add(ctx, uid, kind, summary, payload)
+	a, err := t.actions.Add(ctx, uid, p.Kind, p.Summary, p.Payload)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +187,7 @@ func (t *Toolbox) queue(ctx context.Context, kind ActionKind, summary string, pa
 		return map[string]string{
 			"status":    "awaiting_user_approval",
 			"action_id": a.ID,
-			"summary":   summary,
+			"summary":   p.Summary,
 			"note":      "Queued. Tell the user it is waiting in the 'Waiting for you' approvals list; do not claim it was done. Use edit_pending_action to change it before approval.",
 		}, nil
 	}
@@ -171,10 +199,32 @@ func (t *Toolbox) queue(ctx context.Context, kind ActionKind, summary string, pa
 	if a.Status == StatusFailed {
 		return nil, errors.New(a.Error)
 	}
-	return map[string]string{"status": "done", "action_id": a.ID, "summary": summary, "result": a.Result}, nil
+	return map[string]string{"status": "done", "action_id": a.ID, "summary": p.Summary, "result": a.Result}, nil
 }
 
-// Approve claims a pending action and executes it exactly once.
+func (t *Toolbox) duplicateOf(ctx context.Context, uid string, p plugin.Proposal) (Action, bool) {
+	dd, ok := t.dedupers[p.Kind]
+	if !ok {
+		return Action{}, false
+	}
+	next, err := json.Marshal(p.Payload)
+	if err != nil {
+		return Action{}, false
+	}
+	pending, err := t.actions.List(ctx, uid, 100)
+	if err != nil {
+		return Action{}, false
+	}
+	for _, a := range pending {
+		if a.Status == StatusPending && a.Kind == p.Kind && dd.Duplicate(p.Kind, a.Payload, next) {
+			return a, true
+		}
+	}
+	return Action{}, false
+}
+
+// Approve claims a pending action and executes it exactly once via the
+// plugin that owns its kind.
 func (t *Toolbox) Approve(ctx context.Context, id string) (Action, error) {
 	uid, err := userID(ctx)
 	if err != nil {
@@ -184,77 +234,13 @@ func (t *Toolbox) Approve(ctx context.Context, id string) (Action, error) {
 	if err != nil {
 		return a, err
 	}
-	result, err := t.execute(ctx, a)
+	ex, ok := t.executors[a.Kind]
+	if !ok {
+		return t.actions.Finish(ctx, uid, id, StatusFailed, "", fmt.Sprintf("no plugin can execute %q", a.Kind))
+	}
+	result, err := ex.Execute(ctx, a.Kind, a.Payload)
 	if err != nil {
 		return t.actions.Finish(ctx, uid, id, StatusFailed, "", err.Error())
 	}
 	return t.actions.Finish(ctx, uid, id, StatusExecuted, result, "")
-}
-
-type slot struct {
-	Start time.Time `json:"start"`
-	End   time.Time `json:"end"`
-}
-
-func (t *Toolbox) freeSlots(ctx context.Context, date string, minutes int, dayStart, dayEnd string) ([]slot, error) {
-	if minutes <= 0 {
-		minutes = 30
-	}
-	from, to, err := t.dayWindow(date, dayStart, dayEnd)
-	if err != nil {
-		return nil, err
-	}
-	events, err := t.cal.ListEvents(ctx, "", from, to)
-	if err != nil {
-		return nil, err
-	}
-	var busy []provider.Busy
-	for _, e := range events {
-		if !e.AllDay {
-			busy = append(busy, provider.Busy{Start: e.Start, End: e.End})
-		}
-	}
-	return gaps(from, to, busy, time.Duration(minutes)*time.Minute), nil
-}
-
-// dayWindow parses a date plus HH:MM bounds in the user's time zone.
-func (t *Toolbox) dayWindow(date, dayStart, dayEnd string) (time.Time, time.Time, error) {
-	if dayStart == "" {
-		dayStart = "09:00"
-	}
-	if dayEnd == "" {
-		dayEnd = "18:00"
-	}
-	from, err := time.ParseInLocation("2006-01-02 15:04", date+" "+dayStart, t.loc)
-	if err != nil {
-		return from, from, fmt.Errorf("bad date/day_start: %w", err)
-	}
-	to, err := time.ParseInLocation("2006-01-02 15:04", date+" "+dayEnd, t.loc)
-	if err != nil {
-		return from, to, fmt.Errorf("bad date/day_end: %w", err)
-	}
-	return from, to, nil
-}
-
-// gaps returns the free stretches of at least need between from and to,
-// skipping time already past.
-func gaps(from, to time.Time, busy []provider.Busy, need time.Duration) []slot {
-	sort.Slice(busy, func(i, j int) bool { return busy[i].Start.Before(busy[j].Start) })
-	out := []slot{}
-	cursor := from
-	if now := time.Now(); now.After(cursor) && now.Before(to) {
-		cursor = now.Truncate(15 * time.Minute).Add(15 * time.Minute)
-	}
-	for _, b := range busy {
-		if b.Start.Sub(cursor) >= need {
-			out = append(out, slot{cursor, b.Start})
-		}
-		if b.End.After(cursor) {
-			cursor = b.End
-		}
-	}
-	if to.Sub(cursor) >= need {
-		out = append(out, slot{cursor, to})
-	}
-	return out
 }

@@ -2,6 +2,8 @@
 
 export type Me = { id: string; email: string; name: string };
 
+export type ConnectionInfo = { provider: string; configured: boolean; connected: boolean; label?: string };
+
 export type Status = {
   demo_mode: boolean;
   ai_configured: boolean;
@@ -121,6 +123,9 @@ const post = <T,>(path: string, body: unknown = {}) =>
 export const api = {
   me: () => request<Me>("/api/me"),
   logout: () => post("/auth/logout"),
+  connections: () =>
+    request<{ connections: ConnectionInfo[] }>("/api/connections").then((r) => r.connections ?? []),
+  disconnect: (provider: string) => post(`/auth/${encodeURIComponent(provider)}/disconnect`),
   status: () => request<Status>("/api/status"),
   overview: () => request<Overview>("/api/overview"),
   actions: () => request<{ actions: Action[] | null }>("/api/actions").then((r) => r.actions ?? []),

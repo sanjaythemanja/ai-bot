@@ -56,6 +56,11 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURL  string
+
+	// Slack app credentials for "Connect Slack" (optional).
+	SlackClientID     string
+	SlackClientSecret string
+	SlackRedirectURL  string
 }
 
 func Load() (Config, error) {
@@ -110,6 +115,9 @@ func Load() (Config, error) {
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		GoogleRedirectURL:  env("GOOGLE_REDIRECT_URL", base+"/auth/google/callback"),
+		SlackClientID:      os.Getenv("SLACK_CLIENT_ID"),
+		SlackClientSecret:  os.Getenv("SLACK_CLIENT_SECRET"),
+		SlackRedirectURL:   env("SLACK_REDIRECT_URL", base+"/auth/slack/callback"),
 	}
 	if c.Env == "production" {
 		c.LogToolInputs = false // never log email content in production
@@ -156,6 +164,11 @@ func loadLLM() llm.Config {
 		APIKey:   os.Getenv("LLM_API_KEY"),
 		Model:    os.Getenv("LLM_MODEL"),
 		BaseURL:  os.Getenv("LLM_BASE_URL"),
+	}
+	for _, m := range strings.Split(os.Getenv("LLM_FALLBACK_MODELS"), ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			c.Fallbacks = append(c.Fallbacks, m)
+		}
 	}
 	if c.APIKey == "" {
 		switch {

@@ -80,6 +80,11 @@ const TOOL_LABELS: Record<string, string> = {
   list_pending_actions: "Reviewed pending",
   edit_pending_action: "Edited pending action",
   cancel_pending_action: "Cancelled pending action",
+  list_slack_channels: "Checked Slack channels",
+  read_slack_channel: "Read Slack",
+  search_slack: "Searched Slack",
+  slack_mentions: "Checked Slack mentions",
+  post_slack_message: "Slack message",
 };
 
 export const toolLabel = (name: string) => TOOL_LABELS[name] ?? name.replaceAll("_", " ");

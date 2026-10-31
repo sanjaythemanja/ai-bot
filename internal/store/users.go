@@ -38,6 +38,26 @@ type Users interface {
 	DeleteSession(ctx context.Context, tokenHash []byte) error
 }
 
+// Connection is a user's link to a third-party service (e.g. Slack).
+type Connection struct {
+	Provider  string    `json:"provider"`
+	Label     string    `json:"label"` // e.g. the Slack workspace name
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Connections stores per-user, per-provider credentials (sealed/encrypted
+// by the caller) for plugins that need their own sign-in.
+type Connections interface {
+	SaveConnection(ctx context.Context, userID, provider, label string, sealed []byte) error
+	// ConnectionSecret returns the sealed credential, or ErrNotConnected.
+	ConnectionSecret(ctx context.Context, userID, provider string) ([]byte, error)
+	ListConnections(ctx context.Context, userID string) ([]Connection, error)
+	DeleteConnection(ctx context.Context, userID, provider string) error
+}
+
+// ErrNotConnected means the user hasn't connected that provider.
+var ErrNotConnected = errors.New("not connected")
+
 // NewID returns a random 12-hex-character ID.
 func NewID() string {
 	b := make([]byte, 6)

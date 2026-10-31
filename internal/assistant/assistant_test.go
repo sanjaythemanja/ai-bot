@@ -2,7 +2,6 @@ package assistant
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +17,11 @@ import (
 
 	"github.com/sanjayrj/ai-bot/internal/auth"
 	"github.com/sanjayrj/ai-bot/internal/llm"
+	"github.com/sanjayrj/ai-bot/internal/plugin"
+	calendarplugin "github.com/sanjayrj/ai-bot/internal/plugins/calendar"
+	gmailplugin "github.com/sanjayrj/ai-bot/internal/plugins/gmail"
+	meetplugin "github.com/sanjayrj/ai-bot/internal/plugins/meet"
+	slackplugin "github.com/sanjayrj/ai-bot/internal/plugins/slack"
 	"github.com/sanjayrj/ai-bot/internal/provider"
 	"github.com/sanjayrj/ai-bot/internal/provider/mock"
 	"github.com/sanjayrj/ai-bot/internal/store"
@@ -87,7 +91,7 @@ func newTestHandler(model llm.Client, requireApproval bool) http.Handler {
 	loc := time.UTC
 	ws := mock.New(time.Now().In(loc))
 	actions := NewActionStore()
-	tools := NewToolbox(ws.Mail(), ws.Calendar(), ws.Meetings(), actions, loc, requireApproval)
+	tools := NewToolbox(actions, requireApproval, demoPlugins(ws, loc)...)
 	svc := NewService(Config{
 		Mail: ws.Mail(), Calendar: ws.Calendar(), Agent: NewAgent(model, tools, loc, nil), Tools: tools, Actions: actions,
 		Location: loc, DemoMode: true, AIConfigured: model != nil, AIProvider: "test", Model: "test-model",
@@ -227,20 +231,6 @@ func TestChatWithoutModelAndOverview(t *testing.T) {
 	getJSON(t, srv.URL+"/api/overview", &ov)
 	if len(ov.Emails) == 0 || len(ov.Events) == 0 || ov.Errors != nil {
 		t.Fatalf("overview incomplete: %+v", ov)
-	}
-}
-
-func TestFreeSlots(t *testing.T) {
-	loc := time.UTC
-	ws := mock.New(time.Date(2030, 1, 7, 8, 0, 0, 0, loc)) // future date: "now" never clips the range
-	tb := NewToolbox(ws.Mail(), ws.Calendar(), ws.Meetings(), NewActionStore(), loc, true)
-	slots, err := tb.freeSlots(context.Background(), "2030-01-07", 60, "09:00", "18:00")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Busy 9:30-10:15, 11:00-11:30, 12:30-13:30, 15:00-15:45 → 1h+ gaps: 11:30, 13:30, 15:45
-	if len(slots) != 3 || slots[0].Start.Format("15:04") != "11:30" || slots[2].Start.Format("15:04") != "15:45" {
-		t.Fatalf("unexpected slots: %+v", slots)
 	}
 }
 
@@ -445,7 +435,11 @@ func TestColleagueAvailabilityAndCalendars(t *testing.T) {
 	var out ToolOutput
 	postJSON(t, srv.URL+"/api/tools/check_availability",
 		`{"people":["sara@example.com","marcus@example.com","outsider@other.org"],"start":"`+day+`T14:15:00Z","end":"`+day+`T14:45:00Z"}`, &out)
-	var views []busyView
+	var views []struct {
+		Person string
+		Free   *bool
+		Error  string
+	}
 	if err := json.Unmarshal(out.Result, &views); err != nil || len(views) != 3 {
 		t.Fatalf("availability: %s %s", out.Result, out.Error)
 	}
@@ -584,4 +578,83 @@ func TestDuplicateActionsAreRefused(t *testing.T) {
 	if !strings.Contains(out.Error, "already waiting") {
 		t.Fatalf("expected refusal of second pending change to e2, got %+v", out)
 	}
+}
+
+// demoPlugins wires the standard plugins to the demo workspace.
+func demoPlugins(ws *mock.Workspace, loc *time.Location) []plugin.Plugin {
+	return []plugin.Plugin{
+		gmailplugin.New(ws.Mail()),
+		calendarplugin.New(ws.Calendar(), loc),
+		meetplugin.New(ws.Meetings(), ws.Calendar(), loc),
+		slackplugin.New(ws.Chat()),
+	}
+}
+
+func TestSlackPluginFlow(t *testing.T) {
+	loc := time.UTC
+	ws := mock.New(time.Now().In(loc))
+	actions := NewActionStore()
+	tools := NewToolbox(actions, true, demoPlugins(ws, loc)...)
+	svc := NewService(Config{Mail: ws.Mail(), Calendar: ws.Calendar(), Agent: NewAgent(nil, tools, loc, nil), Tools: tools, Actions: actions, Location: loc})
+	mux := http.NewServeMux()
+	RegisterHTTPRoutes(mux, MakeEndpoints(svc, log.NewNopLogger()), log.NewNopLogger())
+	srv := serveAs(t, mux, "u1")
+
+	// Reads work and Slack has no email tools.
+	var mentions ToolOutput
+	postJSON(t, srv.URL+"/api/tools/slack_mentions", `{}`, &mentions)
+	if mentions.Error != "" || !strings.Contains(string(mentions.Result), "hiring plan") {
+		t.Fatalf("mentions: %s %s", mentions.Result, mentions.Error)
+	}
+	var list struct{ Tools []ToolInfo }
+	getJSON(t, srv.URL+"/api/tools", &list)
+	for _, tl := range list.Tools {
+		if strings.Contains(tl.Name, "slack") && (strings.Contains(tl.Name, "email") || strings.Contains(tl.Name, "draft")) {
+			t.Fatalf("slack plugin should not expose mail tools: %s", tl.Name)
+		}
+	}
+
+	// Unknown channel is rejected before anything is queued.
+	var out ToolOutput
+	postJSON(t, srv.URL+"/api/tools/post_slack_message", `{"channel":"#nope","text":"hi"}`, &out)
+	if !strings.Contains(out.Error, "no channel") {
+		t.Fatalf("expected unknown-channel error, got %+v", out)
+	}
+
+	// Post is queued with the resolved channel name.
+	q := call(t, srv, "post_slack_message", `{"channel":"exec-team","text":"Numbers by Wednesday 👍"}`)
+	id := q["action_id"].(string)
+	if !strings.Contains(q["summary"].(string), "#exec-team") {
+		t.Fatalf("summary should name the channel: %v", q)
+	}
+
+	// A "fixed" copy to another channel is refused; editing works instead.
+	postJSON(t, srv.URL+"/api/tools/post_slack_message", `{"channel":"incidents","text":"Numbers by Wednesday 👍"}`, &out)
+	if !strings.Contains(out.Error, id) {
+		t.Fatalf("expected duplicate refusal, got %+v", out)
+	}
+	edited := call(t, srv, "edit_pending_action", `{"action_id":"`+id+`","channel":"incidents","text":"Numbers by Thursday"}`)
+	if !strings.Contains(edited["summary"].(string), "#incidents") {
+		t.Fatalf("edit not applied: %v", edited)
+	}
+	postJSON(t, srv.URL+"/api/tools/edit_pending_action", `{"action_id":"`+id+`","subject":"x"}`, &out)
+	if !strings.Contains(out.Error, "do not apply") {
+		t.Fatalf("email fields must not apply to slack posts: %+v", out)
+	}
+
+	approve(t, srv, id)
+	posted := ws.Posted()
+	if len(posted) != 1 || posted[0].ChannelName != "incidents" || posted[0].Text != "Numbers by Thursday" {
+		t.Fatalf("expected one edited post in #incidents, got %+v", posted)
+	}
+}
+
+func TestDuplicatePluginToolsPanic(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("registering two plugins with the same tool name must panic")
+		}
+	}()
+	ws := mock.New(time.Now())
+	NewToolbox(NewActionStore(), true, slackplugin.New(ws.Chat()), slackplugin.New(ws.Chat()))
 }

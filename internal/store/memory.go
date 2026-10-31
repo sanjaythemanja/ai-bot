@@ -20,6 +20,13 @@ type Memory struct {
 	users    map[string]*memUser
 	sessions map[string]memSession // key: hex of token hash
 	actions  map[string]*Action
+	conns    map[string]memConn // key: userID + "/" + provider
+}
+
+type memConn struct {
+	Connection
+	userID string
+	sealed []byte
 }
 
 type memConv struct {
@@ -45,6 +52,7 @@ func NewMemory() *Memory {
 		users:    map[string]*memUser{},
 		sessions: map[string]memSession{},
 		actions:  map[string]*Action{},
+		conns:    map[string]memConn{},
 	}
 }
 
@@ -302,6 +310,48 @@ func (m *Memory) Finish(_ context.Context, userID, id, status, result, errMsg st
 	return *a, nil
 }
 
+// ---------- connections ----------
+
+func (m *Memory) SaveConnection(_ context.Context, userID, provider, label string, sealed []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.conns[userID+"/"+provider] = memConn{
+		Connection: Connection{Provider: provider, Label: label, CreatedAt: time.Now()},
+		userID:     userID, sealed: append([]byte(nil), sealed...),
+	}
+	return nil
+}
+
+func (m *Memory) ConnectionSecret(_ context.Context, userID, provider string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.conns[userID+"/"+provider]
+	if !ok {
+		return nil, ErrNotConnected
+	}
+	return append([]byte(nil), c.sealed...), nil
+}
+
+func (m *Memory) ListConnections(_ context.Context, userID string) ([]Connection, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []Connection{}
+	for _, c := range m.conns {
+		if c.userID == userID {
+			out = append(out, c.Connection)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Provider < out[j].Provider })
+	return out, nil
+}
+
+func (m *Memory) DeleteConnection(_ context.Context, userID, provider string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.conns, userID+"/"+provider)
+	return nil
+}
+
 // ActionsView adapts Memory to the Actions interface (Memory's own Get and
 // List are the conversation methods).
 type ActionsView struct{ *Memory }
@@ -315,7 +365,8 @@ func (v ActionsView) List(_ context.Context, userID string, limit int) ([]Action
 }
 
 var (
-	_ Store   = (*Memory)(nil)
-	_ Users   = (*Memory)(nil)
-	_ Actions = ActionsView{}
+	_ Store       = (*Memory)(nil)
+	_ Users       = (*Memory)(nil)
+	_ Connections = (*Memory)(nil)
+	_ Actions     = ActionsView{}
 )

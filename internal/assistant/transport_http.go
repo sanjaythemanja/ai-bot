@@ -94,6 +94,8 @@ func codeFrom(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, auth.ErrUnauthorized):
 		return http.StatusUnauthorized
+	case errors.Is(err, llm.ErrBusy):
+		return http.StatusServiceUnavailable
 	case errors.Is(err, llm.ErrNotConfigured):
 		return http.StatusServiceUnavailable
 	default:

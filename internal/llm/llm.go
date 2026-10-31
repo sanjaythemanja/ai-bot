@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Role of a message author.
@@ -51,11 +52,28 @@ type Message struct {
 	Native *Native `json:"native,omitempty"`
 }
 
-// Native is a backend's raw wire form of a message, tagged by backend.
+// Native is a backend's raw wire form of a message, tagged by backend and
+// model. It is replayed only to the same model: provider extras such as
+// Gemini thought signatures can be rejected by a different model, so a
+// fallback model gets the neutral fields instead.
 type Native struct {
-	Kind string          `json:"kind"` // "openai" | "anthropic"
-	Raw  json.RawMessage `json:"raw"`
+	Kind  string          `json:"kind"`            // "openai" | "anthropic"
+	Model string          `json:"model,omitempty"` // empty on messages saved before routing existed
+	Raw   json.RawMessage `json:"raw"`
 }
+
+// replayable reports whether n can be sent verbatim to (kind, model).
+func (n *Native) replayable(kind, model string) bool {
+	return n != nil && n.Kind == kind && (n.Model == "" || n.Model == model)
+}
+
+// APIError is a non-2xx response from a model API.
+type APIError struct {
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("llm API error %d: %s", e.Status, e.Message) }
 
 // ToolSpec describes a tool as a JSON Schema object.
 type ToolSpec struct {
@@ -112,6 +130,9 @@ type Config struct {
 	APIKey   string
 	Model    string
 	BaseURL  string // optional override
+	// Fallbacks are models (same provider and key) tried in order when the
+	// main model is overloaded or failing.
+	Fallbacks []string
 }
 
 // Resolve fills Provider from the key prefix when it is not set.
@@ -133,17 +154,34 @@ func (c Config) Resolve() Config {
 // ErrNotConfigured means no usable model was configured.
 var ErrNotConfigured = errors.New("no AI model configured: set LLM_API_KEY and LLM_MODEL")
 
-// New builds the configured backend.
+// New builds the configured backend: the main model plus any fallbacks,
+// each retried on transient errors, behind a Router.
 func New(c Config) (Client, error) {
 	c = c.Resolve()
-	switch c.Provider {
-	case "openai", "openai-compatible":
-		if c.Model == "" {
-			return nil, fmt.Errorf("LLM_MODEL is required for the openai provider")
+	build := func(model string) (Client, error) {
+		switch c.Provider {
+		case "openai", "openai-compatible":
+			if model == "" {
+				return nil, fmt.Errorf("LLM_MODEL is required for the openai provider")
+			}
+			return NewOpenAI(c.APIKey, model, c.BaseURL), nil
+		case "anthropic", "claude":
+			return NewAnthropic(c.APIKey, model, c.BaseURL), nil
 		}
-		return NewOpenAI(c.APIKey, c.Model, c.BaseURL), nil
-	case "anthropic", "claude":
-		return NewAnthropic(c.APIKey, c.Model, c.BaseURL), nil
+		return nil, fmt.Errorf("unknown LLM_PROVIDER %q (use openai or anthropic)", c.Provider)
 	}
-	return nil, fmt.Errorf("unknown LLM_PROVIDER %q (use openai or anthropic)", c.Provider)
+	var routes []Route
+	seen := map[string]bool{}
+	for _, m := range append([]string{c.Model}, c.Fallbacks...) {
+		if m = strings.TrimSpace(m); seen[m] || (m == "" && len(routes) > 0) {
+			continue
+		}
+		seen[m] = true
+		cl, err := build(m)
+		if err != nil {
+			return nil, err
+		}
+		routes = append(routes, Route{Name: m, Client: WithRetry(cl, 3, 800*time.Millisecond)})
+	}
+	return NewRouter(time.Minute, routes...), nil
 }
