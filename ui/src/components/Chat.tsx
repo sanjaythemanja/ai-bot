@@ -42,6 +42,7 @@ export function Chat({
   requireApproval,
   undoSeconds,
   resumeJob,
+  readAloud,
 }: {
   sessionId: string;
   messages: ChatMessage[];
@@ -51,6 +52,7 @@ export function Chat({
   requireApproval: boolean;
   undoSeconds: number;
   resumeJob?: Job | null; // a job still running when this conversation was opened
+  readAloud: boolean; // read every reply aloud, typed or spoken
 }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -74,8 +76,7 @@ export function Chat({
   };
 
   // follow watches a job until it ends, then turns it into a reply.
-  // viaVoice: the message was spoken, so the reply is read aloud too.
-  function follow(j: Job, viaVoice: boolean) {
+  function follow(j: Job) {
     setJob(j);
     setBusy(true);
     unwatch.current?.();
@@ -85,7 +86,7 @@ export function Chat({
       if (u.status === "running") return;
       if (u.status === "done") {
         setMessages((m) => [...m, { role: "assistant", text: u.reply || "(no reply)", tools: u.tool_calls ?? [], warning: u.warning }]);
-        if (viaVoice && u.reply) speak(u.reply);
+        if (readAloud && u.reply) speak(u.reply);
       } else {
         setMessages((m) => [...m, { role: "error", text: u.error || "Something went wrong." }]);
       }
@@ -103,13 +104,13 @@ export function Chat({
   useEffect(() => {
     if (resumeJob?.status === "running") {
       setMessages((m) => [...m, { role: "user", text: resumeJob.message }]);
-      follow(resumeJob, false);
+      follow(resumeJob);
     }
     return () => unwatch.current?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function send(text: string, viaVoice = false) {
+  async function send(text: string) {
     const msg = text.trim();
     if (!msg || busy) return;
     stopSpeaking();
@@ -117,7 +118,7 @@ export function Chat({
     setBusy(true);
     setMessages((m) => [...m, { role: "user", text: msg }]);
     try {
-      follow(await api.startChat(sessionId, msg), viaVoice);
+      follow(await api.startChat(sessionId, msg));
     } catch (e) {
       setMessages((m) => [...m, { role: "error", text: (e as Error).message }]);
       setBusy(false);
@@ -165,7 +166,7 @@ export function Chat({
       <Composer
         value={draft}
         onChange={setDraft}
-        onSend={(spoken) => send(draft, spoken)}
+        onSend={() => send(draft)}
         disabled={busy || !aiReady}
         inputRef={input}
         requireApproval={requireApproval}
@@ -333,14 +334,13 @@ function Composer({
 }: {
   value: string;
   onChange: (v: string) => void;
-  onSend: (spoken: boolean) => void; // spoken: the text came from the mic
+  onSend: () => void;
   disabled: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   requireApproval: boolean;
 }) {
   const voice = useDictation();
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const spoken = useRef(false); // the box holds dictated text
   const sent = useRef(false); // ignore late words after Send
 
   // Speak as long as you like (pauses are fine); the words fill the box.
@@ -355,7 +355,6 @@ function Composer({
     voice.start({
       onText: (t) => {
         if (sent.current) return;
-        spoken.current = true;
         onChange(join(t));
       },
       onDone: () => inputRef.current?.focus(),
@@ -369,9 +368,7 @@ function Composer({
       sent.current = true;
       voice.stop();
     }
-    const wasSpoken = spoken.current;
-    spoken.current = false;
-    onSend(wasSpoken);
+    onSend();
   };
 
   useLayoutEffect(() => {

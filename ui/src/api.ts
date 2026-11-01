@@ -16,6 +16,7 @@ export type Status = {
   timezone: string;
   require_approval: boolean;
   undo_seconds: number;
+  read_aloud: boolean; // read every reply aloud (config.yaml read_replies_aloud)
   storage: "postgres" | "memory" | string;
 };
 

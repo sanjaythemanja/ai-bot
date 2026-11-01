@@ -75,3 +75,20 @@ func TestProductionValidation(t *testing.T) {
 		t.Error("unknown APP_ENV should be rejected")
 	}
 }
+
+func TestReadAloudSetting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("read_replies_aloud: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fc, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := boolSetting("TEST_READ_ALOUD", fc.ReadAloud, false); !v {
+		t.Fatal("read_replies_aloud: true should be read from the file")
+	}
+	if v, _ := boolSetting("TEST_READ_ALOUD", nil, false); v {
+		t.Fatal("read aloud must default to off")
+	}
+}

@@ -10,3 +10,7 @@ require_approval: true
 # After you click Approve, the action waits this many seconds (with an Undo
 # button) before it actually runs. 0 = run immediately.
 undo_seconds: 30
+
+# true  = every assistant reply is read aloud in the browser (typed or spoken).
+# false = replies are never read aloud.
+read_replies_aloud: false

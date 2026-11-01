@@ -36,6 +36,9 @@ type Config struct {
 	// UndoSeconds is how long an approved action waits (and can be undone)
 	// before it runs. config.yaml undo_seconds; 0 turns the window off.
 	UndoSeconds int
+	// ReadAloud reads every assistant reply aloud in the browser, whether
+	// the message was typed or spoken. config.yaml read_replies_aloud.
+	ReadAloud bool
 
 	// DatabaseURL, when set, stores users, sessions, conversations and
 	// actions in PostgreSQL.
@@ -98,6 +101,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	readAloud, err := boolSetting("READ_REPLIES_ALOUD", file.ReadAloud, false)
+	if err != nil {
+		return Config{}, err
+	}
 	undo := 30
 	if file.UndoSeconds != nil {
 		undo = *file.UndoSeconds
@@ -116,6 +123,7 @@ func Load() (Config, error) {
 		AgentAPIToken:      os.Getenv("AGENT_API_TOKEN"),
 		RequireApproval:    approval,
 		UndoSeconds:        undo,
+		ReadAloud:          readAloud,
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		AppSecret:          os.Getenv("APP_SECRET"),
 		AllowedEmails:      os.Getenv("ALLOWED_EMAILS"),
@@ -207,6 +215,7 @@ func (c Config) LLMEnabled() bool { return c.LLM.APIKey != "" || c.LLM.BaseURL !
 type fileConfig struct {
 	RequireApproval *bool `yaml:"require_approval"`
 	UndoSeconds     *int  `yaml:"undo_seconds"`
+	ReadAloud       *bool `yaml:"read_replies_aloud"`
 }
 
 // loadFile reads config.yaml; a missing file just means defaults.

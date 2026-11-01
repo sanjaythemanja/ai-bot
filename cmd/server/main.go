@@ -155,7 +155,7 @@ func main() {
 		Location: cfg.Location, DemoMode: cfg.DemoMode,
 		AIConfigured: model != nil, AIProvider: cfg.LLM.Provider, Model: cfg.LLM.Model, AIError: aiErr,
 		GoogleConfigured: gauth.Configured(),
-		Store:            convs, StoreKind: storeKind, UndoSeconds: cfg.UndoSeconds, Jobs: jobs,
+		Store:            convs, StoreKind: storeKind, UndoSeconds: cfg.UndoSeconds, ReadAloud: cfg.ReadAloud, Jobs: jobs,
 	})
 	svc = assistant.LoggingMiddleware(log.With(logger, "component", "service"))(svc)
 	svc = assistant.InstrumentingMiddleware(

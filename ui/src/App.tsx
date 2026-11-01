@@ -221,6 +221,7 @@ function Workspace({ me }: { me: Me }) {
           aiHint={aiHint}
           requireApproval={s?.require_approval ?? true}
           undoSeconds={undoSeconds}
+          readAloud={s?.read_aloud ?? false}
         />
       </main>
 

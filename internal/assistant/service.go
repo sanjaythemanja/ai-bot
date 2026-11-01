@@ -82,6 +82,7 @@ type Status struct {
 	Timezone         string `json:"timezone"`
 	RequireApproval  bool   `json:"require_approval"`
 	UndoSeconds      int    `json:"undo_seconds"`
+	ReadAloud        bool   `json:"read_aloud"`
 	Storage          string `json:"storage"`
 }
 
@@ -120,6 +121,7 @@ type Config struct {
 	StoreKind        string      // "postgres" or "memory", for /api/status
 	Jobs             *Jobs       // background runs; nil = in-memory store
 	UndoSeconds      int         // undo window the UI waits before approving
+	ReadAloud        bool        // the UI reads every reply aloud
 }
 
 type service struct {
@@ -389,6 +391,7 @@ func (s *service) Status(context.Context) (Status, error) {
 		Timezone:         zoneName(s.cfg.Location),
 		RequireApproval:  s.cfg.Tools.RequiresApproval(),
 		UndoSeconds:      s.cfg.UndoSeconds,
+		ReadAloud:        s.cfg.ReadAloud,
 		Storage:          s.cfg.StoreKind,
 	}, nil
 }
