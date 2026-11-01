@@ -1,5 +1,6 @@
 // Voice input and read-aloud, using the browser's built-in speech APIs (no
-// server or API cost). Chrome, Edge and Safari support dictation; Firefox
+// server or API cost). Dictation only fills the message box; the user
+// reviews it and presses Send. Chrome, Edge and Safari support dictation; Firefox
 // doesn't, so the mic button is hidden there.
 import { useRef, useState } from "react";
 
@@ -20,7 +21,7 @@ const ERRORS: Record<string, string> = {
 
 type Handlers = {
   onText: (text: string) => void; // live transcript so far
-  onDone: (text: string, stoppedByUser: boolean) => void;
+  onDone: (text: string) => void; // listening stopped; text stays for review
   onError: (message: string) => void;
 };
 
@@ -33,9 +34,8 @@ export function useDictation() {
     const r = new Recognition();
     r.lang = navigator.language || "en-US";
     r.interimResults = true;
-    r.continuous = false; // ends on a pause, which sends the message
+    r.continuous = true; // keep listening through pauses until the user taps stop
     let finalText = "";
-    let manual = false;
     r.onresult = (e: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => {
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -51,13 +51,10 @@ export function useDictation() {
     r.onend = () => {
       active.current = null;
       setListening(false);
-      h.onDone(finalText.trim(), manual);
+      h.onDone(finalText.trim());
     };
     active.current = {
-      stop: () => {
-        manual = true;
-        r.stop();
-      },
+      stop: () => r.stop(),
     };
     try {
       r.start();

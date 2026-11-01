@@ -165,8 +165,7 @@ export function Chat({
       <Composer
         value={draft}
         onChange={setDraft}
-        onSend={() => send(draft)}
-        onVoiceSend={(t) => send(t, true)}
+        onSend={(spoken) => send(draft, spoken)}
         disabled={busy || !aiReady}
         inputRef={input}
         requireApproval={requireApproval}
@@ -328,37 +327,51 @@ function Composer({
   value,
   onChange,
   onSend,
-  onVoiceSend,
   disabled,
   inputRef,
   requireApproval,
 }: {
   value: string;
   onChange: (v: string) => void;
-  onSend: () => void;
-  onVoiceSend: (text: string) => void;
+  onSend: (spoken: boolean) => void; // spoken: the text came from the mic
   disabled: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   requireApproval: boolean;
 }) {
   const voice = useDictation();
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const spoken = useRef(false); // the box holds dictated text
+  const sent = useRef(false); // ignore late words after Send
 
-  // Speak; a pause sends the message. Tapping stop keeps the text to edit.
+  // Speak as long as you like (pauses are fine); the words fill the box.
+  // Nothing is sent until you press Send.
   const toggleMic = () => {
     if (voice.listening) return voice.stop();
     stopSpeaking();
     setVoiceError(null);
+    sent.current = false;
     const base = value.trim();
     const join = (t: string) => (base ? `${base} ${t}` : t);
     voice.start({
-      onText: (t) => onChange(join(t)),
-      onDone: (t, stoppedByUser) => {
-        if (t && !stoppedByUser) onVoiceSend(join(t));
-        else inputRef.current?.focus();
+      onText: (t) => {
+        if (sent.current) return;
+        spoken.current = true;
+        onChange(join(t));
       },
+      onDone: () => inputRef.current?.focus(),
       onError: setVoiceError,
     });
+  };
+
+  const submit = () => {
+    if (!value.trim() || disabled) return;
+    if (voice.listening) {
+      sent.current = true;
+      voice.stop();
+    }
+    const wasSpoken = spoken.current;
+    spoken.current = false;
+    onSend(wasSpoken);
   };
 
   useLayoutEffect(() => {
@@ -374,7 +387,7 @@ function Composer({
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            onSend();
+            submit();
           }}
           className="flex items-end gap-2 rounded-2xl border border-line-strong/70 bg-surface p-2 pl-4 shadow-[0_1px_2px_rgba(40,30,20,0.04)] transition-colors focus-within:border-forest/50"
         >
@@ -386,10 +399,10 @@ function Composer({
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                onSend();
+                submit();
               }
             }}
-            placeholder={voice.listening ? "Listening… pause when done" : "Ask about your day…"}
+            placeholder={voice.listening ? "Listening… tap stop, then Send" : "Ask about your day…"}
             aria-label="Message"
             className="max-h-[200px] min-h-[24px] flex-1 resize-none bg-transparent py-1.5 text-[15px] text-ink outline-none placeholder:text-ink-3"
           />
@@ -419,7 +432,7 @@ function Composer({
         </form>
         {voiceError && <p className="mt-2 text-center text-[12px] text-danger">{voiceError}</p>}
         <p className="mt-2 text-center text-[12px] text-ink-3">
-          Enter to send{canDictate ? " · Tap the mic to speak" : " · Shift + Enter for a new line"} ·{" "}
+          Enter to send{canDictate ? " · Tap the mic to dictate, then Send" : " · Shift + Enter for a new line"} ·{" "}
           {requireApproval ? "Emails and invites wait for your approval" : "Approval is off: emails and invites go out right away"}
         </p>
       </div>
