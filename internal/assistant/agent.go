@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-kit/log"
+
+	"github.com/sanjayrj/ai-bot/internal/auth"
 
 	"github.com/sanjayrj/ai-bot/internal/llm"
 )
@@ -97,11 +100,16 @@ func (a *Agent) RunWithProgress(ctx context.Context, history []llm.Message, user
 		progress = func(Step) {}
 	}
 	now := time.Now().In(a.loc)
-	stamped := fmt.Sprintf("[Current time: %s (%s)]\n\n%s", now.Format("Monday, 2006-01-02 15:04 -07:00"), zoneName(a.loc), userText)
+	who := ""
+	if u, err := auth.UserFrom(ctx); err == nil && strings.TrimSpace(u.Name) != "" {
+		who = "; the user's name: " + strings.TrimSpace(u.Name) // for sign-offs; the email address is never sent
+	}
+	stamped := fmt.Sprintf("[Current time: %s (%s)%s]\n\n%s", now.Format("Monday, 2006-01-02 15:04 -07:00"), zoneName(a.loc), who, userText)
 
 	msgs := append(append([]llm.Message(nil), history...), llm.Message{Role: llm.RoleUser, Text: stamped})
 	specs := a.tools.Specs()
 	var calls []ToolCall
+	checked := false // the claim check runs at most once per message
 
 	for turn := 0; turn < a.maxTurns; turn++ {
 		model := Step{ID: fmt.Sprintf("m%d", turn+1), Kind: StepModel, Status: StepRunning}
@@ -125,6 +133,14 @@ func (a *Agent) RunWithProgress(ctx context.Context, history []llm.Message, user
 			return msgs, strings.TrimSpace(resp.Message.Text + "\n\n_(response was cut off)_"), calls, nil
 		}
 		if len(resp.Message.ToolCalls) == 0 {
+			if !checked && a.claimsUndoneAction(resp.Message.Text, calls) {
+				// The reply says something was queued, sent or saved, but no
+				// tool did it. Ask the model once to act or correct itself.
+				checked = true
+				_ = a.logger.Log("step", turn+1, "msg", "reply claims an action no tool performed; asking the model to correct it")
+				msgs = append(msgs, llm.Message{Role: llm.RoleUser, Text: claimCheckPrompt})
+				continue
+			}
 			return msgs, strings.TrimSpace(resp.Message.Text), calls, nil
 		}
 
@@ -140,6 +156,26 @@ func (a *Agent) RunWithProgress(ctx context.Context, history []llm.Message, user
 		}
 	}
 	return history, "", calls, errors.New("assistant stopped: too many tool steps for one request")
+}
+
+// claimRe matches a reply saying an action was carried out or queued.
+var claimRe = regexp.MustCompile(`(?i)\b(queued|awaiting (your )?approval|waiting for (your )?approval|saved (it )?(as|to) (a )?drafts?|(draft|email|message|event|meeting|invite) (has been|was|is) (sent|saved|created|scheduled|booked|posted|drafted)|i('ve| have) (sent|scheduled|created|booked|posted|drafted|saved|set up))\b`)
+
+const claimCheckPrompt = `[Automatic check] Your reply says an action was queued, sent, drafted, created or saved, but no tool call in this request did that. If the user asked for it, call the right tool now (send_email to send, create_event to book, and so on). Otherwise rewrite your reply so it only states what the tool results show.`
+
+// claimsUndoneAction reports whether text claims an action although no
+// state-changing tool succeeded during this message. Listing pending
+// actions is a legitimate reason to talk about approvals.
+func (a *Agent) claimsUndoneAction(text string, calls []ToolCall) bool {
+	if !claimRe.MatchString(text) {
+		return false
+	}
+	for _, c := range calls {
+		if !c.IsError && (a.tools.Serial(c.Name) || c.Name == "list_pending_actions") {
+			return false
+		}
+	}
+	return true
 }
 
 // runTools runs one model turn's tool calls and returns their results in

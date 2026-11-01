@@ -391,8 +391,10 @@ func TestConversationsPersistAndList(t *testing.T) {
 	if code := postJSON(t, srv.URL+"/api/chat", `{"session_id":"c1","message":"thanks"}`, &second); code != 200 {
 		t.Fatalf("second chat status %d", code)
 	}
-	if calls.Load() != 3 {
-		t.Fatalf("expected 3 model calls across two turns, got %d", calls.Load())
+	// Turn 1: tool call + answer. Turn 2: the fake again claims "I queued a
+	// reply" without calling a tool, so the claim check asks once more.
+	if calls.Load() != 4 {
+		t.Fatalf("expected 4 model calls across two turns, got %d", calls.Load())
 	}
 
 	var list struct {

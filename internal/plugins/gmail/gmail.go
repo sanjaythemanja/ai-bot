@@ -43,7 +43,8 @@ var (
 func (p *Plugin) Name() string { return "gmail" }
 
 func (p *Plugin) Guidance() string {
-	return `- Email: use draft_email when the user wants to review wording; update_draft edits a draft (to/cc/bcc/subject/body). Never invent facts, commitments or numbers.
+	return `- Email: when the user asks to send, mail or email someone, use send_email (it still waits for their approval). Use draft_email only when they ask for a draft. update_draft edits a draft (to/cc/bcc/subject/body); to send an existing draft use send_draft. Never invent facts, commitments or numbers.
+- Write real line breaks in email bodies, and sign with the user's name; never leave placeholders such as [Your Name].
 - Voice: before writing any email or reply, call get_writing_style (once per conversation) and write like the user: their greeting, sign-off, length and tone.
 - When you email someone about a meeting, include its title, date, time (with time zone) and the event link.
 - Priorities: use triage_inbox to decide what matters and always say why (its reasons). When the user corrects a priority ("Acme is always important", "ignore LinkedIn"), save it with add_sorting_rule.
@@ -97,6 +98,16 @@ func (c changes) apply(m provider.OutgoingEmail) provider.OutgoingEmail {
 		m.Body = *c.Body
 	}
 	return m
+}
+
+// ready cleans a model-written email (real line breaks, no stray spaces)
+// and refuses one that still has a fill-in-the-blank like "[Your Name]".
+func ready(m provider.OutgoingEmail) (provider.OutgoingEmail, error) {
+	m.Subject, m.Body = plugin.CleanText(m.Subject), plugin.CleanText(m.Body)
+	if ph := plugin.Placeholder(m.Subject + "\n" + m.Body); ph != "" {
+		return m, fmt.Errorf("the email still contains the placeholder %s; replace it with real text (the user's name is given with the current time) or ask the user", ph)
+	}
+	return m, nil
 }
 
 func summary(prefix string, m provider.OutgoingEmail) string {
@@ -179,6 +190,9 @@ func (p *Plugin) Tools() []plugin.Tool {
 				if err != nil {
 					return nil, err
 				}
+				if in, err = ready(in); err != nil {
+					return nil, err
+				}
 				id, err := p.mail.CreateDraft(ctx, in)
 				if err != nil {
 					return nil, err
@@ -199,6 +213,9 @@ func (p *Plugin) Tools() []plugin.Tool {
 			Propose: func(ctx context.Context, raw json.RawMessage) (plugin.Proposal, error) {
 				in, err := plugin.Decode[provider.OutgoingEmail](raw)
 				if err != nil {
+					return plugin.Proposal{}, err
+				}
+				if in, err = ready(in); err != nil {
 					return plugin.Proposal{}, err
 				}
 				if len(in.To) == 0 {
@@ -250,7 +267,10 @@ func (p *Plugin) Tools() []plugin.Tool {
 				if err != nil {
 					return nil, err
 				}
-				msg := in.changes.apply(d.Message)
+				msg, err := ready(in.changes.apply(d.Message))
+				if err != nil {
+					return nil, err
+				}
 				if err := p.mail.UpdateDraft(ctx, in.DraftID, msg); err != nil {
 					return nil, err
 				}
@@ -292,8 +312,21 @@ func (p *Plugin) draftProposal(ctx context.Context, raw json.RawMessage, kind, p
 	if err != nil {
 		return plugin.Proposal{}, err
 	}
-	if kind == KindSendDraft && len(d.Message.To) == 0 {
-		return plugin.Proposal{}, errors.New("the draft has no recipients; add some with update_draft first")
+	if kind == KindSendDraft {
+		if len(d.Message.To) == 0 {
+			return plugin.Proposal{}, errors.New("the draft has no recipients; add some with update_draft first")
+		}
+		// Fix literal "\n" from an older draft before it goes out.
+		clean, err := ready(d.Message)
+		if err != nil {
+			return plugin.Proposal{}, fmt.Errorf("%w; fix it with update_draft first", err)
+		}
+		if clean.Body != d.Message.Body || clean.Subject != d.Message.Subject {
+			if err := p.mail.UpdateDraft(ctx, in.DraftID, clean); err != nil {
+				return plugin.Proposal{}, err
+			}
+			d.Message = clean
+		}
 	}
 	ref := draftRef{DraftID: in.DraftID, Summary: summary(prefix, d.Message), Message: &d.Message}
 	return plugin.Proposal{Kind: kind, Summary: ref.Summary, Payload: ref}, nil
@@ -353,7 +386,9 @@ func (p *Plugin) Edit(_ context.Context, kind string, payload, raw json.RawMessa
 	if err != nil {
 		return plugin.Proposal{}, err
 	}
-	pl.OutgoingEmail = ch.apply(pl.OutgoingEmail)
+	if pl.OutgoingEmail, err = ready(ch.apply(pl.OutgoingEmail)); err != nil {
+		return plugin.Proposal{}, err
+	}
 	if len(pl.To) == 0 {
 		return plugin.Proposal{}, errors.New("the email would have no recipients")
 	}

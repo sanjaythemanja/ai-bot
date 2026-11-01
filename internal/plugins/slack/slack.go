@@ -180,7 +180,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 // proposal validates the channel up front so the approval card shows a real
 // channel name and approval can't fail on a typo.
 func (p *Plugin) proposal(ctx context.Context, m Post) (plugin.Proposal, error) {
-	m.Text = strings.TrimSpace(m.Text)
+	m.Text = plugin.CleanText(m.Text)
 	if m.Text == "" {
 		return plugin.Proposal{}, errors.New("message text is empty")
 	}

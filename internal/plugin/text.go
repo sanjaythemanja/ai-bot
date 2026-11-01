@@ -70,3 +70,21 @@ func Addrs(header string) []string {
 	}
 	return out
 }
+
+// escapedBreaks turns escape sequences a model wrote out literally ("\n" as
+// a backslash and an n) back into real line breaks and tabs.
+var escapedBreaks = strings.NewReplacer(`\r\n`, "\n", `\n`, "\n", `\t`, "\t")
+
+// CleanText prepares model-written text for sending: real line breaks
+// instead of literal "\n", and no stray whitespace at either end.
+func CleanText(s string) string {
+	return strings.TrimSpace(escapedBreaks.Replace(s))
+}
+
+var placeholderRe = regexp.MustCompile(`(?i)\[\s*(your|my|insert|recipient|sender|first name|full name|name|company|date|time)\b[^\]\n]{0,30}\]`)
+
+// Placeholder returns the first fill-in-the-blank left in text, such as
+// "[Your Name]", or "".
+func Placeholder(text string) string {
+	return placeholderRe.FindString(text)
+}

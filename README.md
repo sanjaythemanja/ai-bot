@@ -38,6 +38,8 @@ For a different OpenAI-compatible service, also set `LLM_BASE_URL`. For Claude, 
 - **Phone-friendly approvals**: a badge shows how many actions are waiting, and approval cards appear right under the reply in chat.
 - **Live progress, in the background**: each message runs as a background job. The chat shows every step as it happens ("Read transcript: 3 of 5"), with a Stop button. You can close or reload the tab; it keeps running and the conversation picks it back up. A job interrupted by a server restart is marked so you can resend it.
 - **Parallel tools**: when the model asks for several lookups at once (five transcripts, five emails), they run concurrently, at most 4 at a time, each with its own 90-second limit. Results go back in the original order. Tools that change something (sending, drafts, saved rules) still run one at a time, so duplicate checks stay reliable.
+- **Checks its own claims**: if the model's reply says something was sent, queued or saved but no tool actually did it, the server makes the model act or correct itself (once) before you see the reply. When you ask to *send* an email it queues `send_email` for approval; it only saves a draft when you ask for a draft.
+- **Clean email text**: line breaks the model wrote as literal `\n` become real line breaks in emails, drafts and Slack posts; an email still containing a placeholder such as `[Your Name]` is refused back to the model, which is given your display name (never your email address) for sign-offs.
 - **Big results condensed**: a tool result over 12,000 characters (a long transcript or email) is summarised for your question by its own model call, in parallel with the others, before the main model sees it. Short results pass through untouched.
 
 ## Plugins

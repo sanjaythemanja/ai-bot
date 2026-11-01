@@ -185,3 +185,49 @@ func TestLargeResultsAreCondensed(t *testing.T) {
 }
 
 func mockWorkspace() *mock.Workspace { return mock.New(time.Now().UTC()) }
+
+func text(s string) llm.Response {
+	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Text: s}, Stop: llm.StopEnd}
+}
+
+func TestClaimedButUndoneActionIsCorrected(t *testing.T) {
+	// The model first claims the email was sent without calling a tool; the
+	// check makes it act, so the email really ends up waiting for approval.
+	m := &scriptModel{turns: []llm.Response{
+		text("Done! I've sent the email to Rakshit."),
+		toolCalls([2]string{"send_email", `{"to":["rakshit@example.com"],"subject":"Run","body":"See you at 6.\nSanjay"}`}),
+		text("The email to Rakshit is waiting for your approval."),
+	}}
+	tools := NewToolbox(NewActionStore(), true, demoPlugins(mockWorkspace(), time.UTC)...)
+	ctx := auth.WithUser(context.Background(), store.User{ID: "u1", Name: "Sanjay"})
+	a := NewAgent(m, tools, time.UTC, nil)
+	_, reply, calls, err := a.Run(ctx, nil, "send Rakshit an email about the run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].Name != "send_email" || calls[0].IsError || !strings.Contains(reply, "waiting for your approval") {
+		t.Fatalf("expected the claim to be turned into a real send_email: reply=%q calls=%+v", reply, calls)
+	}
+	if got := m.requests[1].Messages[len(m.requests[1].Messages)-1].Text; !strings.Contains(got, "Automatic check") {
+		t.Fatalf("the correction prompt was not sent: %q", got)
+	}
+	// The user's name (not their email) is given to the model for sign-offs.
+	if first := m.requests[0].Messages[0].Text; !strings.Contains(first, "the user's name: Sanjay") {
+		t.Fatalf("name missing from the prompt: %q", first)
+	}
+}
+
+func TestTruthfulRepliesAreNotChecked(t *testing.T) {
+	m := &scriptModel{turns: []llm.Response{
+		toolCalls([2]string{"send_email", `{"to":["rakshit@example.com"],"subject":"Run","body":"See you."}`}),
+		text("I've queued the email for your approval."),
+	}}
+	tools := NewToolbox(NewActionStore(), true, demoPlugins(mockWorkspace(), time.UTC)...)
+	ctx := auth.WithUser(context.Background(), store.User{ID: "u1"})
+	if _, _, _, err := NewAgent(m, tools, time.UTC, nil).Run(ctx, nil, "email Rakshit"); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.requests) != 2 {
+		t.Fatalf("a claim backed by a real tool call must not trigger a check (%d model calls)", len(m.requests))
+	}
+}

@@ -1,10 +1,15 @@
 package assistant
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sanjayrj/ai-bot/internal/auth"
+	"github.com/sanjayrj/ai-bot/internal/provider"
+	"github.com/sanjayrj/ai-bot/internal/store"
 )
 
 func todayDate() string    { return time.Now().UTC().Format("2006-01-02") }
@@ -180,5 +185,38 @@ func TestActionsRecordWhy(t *testing.T) {
 	getJSON(t, srv.URL+"/api/actions", &acts)
 	if acts.Actions[0].Reason == "" {
 		t.Fatal("actions from the tools API should still say why they exist")
+	}
+}
+
+func TestEmailsGetRealLineBreaksAndNoPlaceholders(t *testing.T) {
+	srv := newTestServer(t, nil)
+
+	// A model that writes "\n" literally still produces real line breaks.
+	d := call(t, srv, "draft_email", `{"to":["rakshit@example.com"],"subject":"Run","body":"Hey Rakshit,\\n\\nRun at 6.\\n\\nBest,\\nSanjay"}`)
+	got := call(t, srv, "read_draft", `{"draft_id":"`+d["draft_id"].(string)+`"}`)
+	body := got["message"].(map[string]any)["body"].(string)
+	if body != "Hey Rakshit,\n\nRun at 6.\n\nBest,\nSanjay" {
+		t.Fatalf("draft body not cleaned: %q", body)
+	}
+
+	// A placeholder is refused back to the model instead of being sent.
+	var out ToolOutput
+	postJSON(t, srv.URL+"/api/tools/send_email", `{"to":["rakshit@example.com"],"subject":"Run","body":"See you.\nBest,\n[Your Name]"}`, &out)
+	if !strings.Contains(out.Error, "[Your Name]") {
+		t.Fatalf("placeholder should be refused: %+v", out)
+	}
+}
+
+func TestSendDraftCleansOldDraftsFirst(t *testing.T) {
+	ws := mockWorkspace()
+	id, _ := ws.Mail().CreateDraft(context.Background(), provider.OutgoingEmail{To: []string{"r@example.com"}, Subject: "Run", Body: `Hi,\n\nSee you.\nSanjay`})
+	tools := NewToolbox(NewActionStore(), true, demoPlugins(ws, time.UTC)...)
+	ctx := auth.WithUser(context.Background(), store.User{ID: "u1"})
+	if _, err := tools.Call(ctx, "send_draft", json.RawMessage(`{"draft_id":"`+id+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := ws.Mail().GetDraft(context.Background(), id)
+	if d.Message.Body != "Hi,\n\nSee you.\nSanjay" {
+		t.Fatalf("old draft should be cleaned before it is queued: %q", d.Message.Body)
 	}
 }
