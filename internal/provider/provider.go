@@ -27,6 +27,7 @@ type Email struct {
 	Body     string    `json:"body,omitempty"`
 	Date     time.Time `json:"date"`
 	Unread   bool      `json:"unread"`
+	Sent     bool      `json:"sent,omitempty"` // written by the user
 }
 
 // OutgoingEmail is a message to send or draft.
@@ -116,6 +117,8 @@ type Mail interface {
 	Connected() bool
 	ListMessages(ctx context.Context, query string, max int) ([]Email, error)
 	GetMessage(ctx context.Context, id string) (Email, error)
+	// Thread returns a conversation's messages, oldest first, without bodies.
+	Thread(ctx context.Context, threadID string) ([]Email, error)
 	CreateDraft(ctx context.Context, msg OutgoingEmail) (string, error)
 	Send(ctx context.Context, msg OutgoingEmail) (string, error)
 	ListDrafts(ctx context.Context, max int) ([]Draft, error)

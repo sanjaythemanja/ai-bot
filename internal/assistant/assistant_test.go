@@ -582,9 +582,10 @@ func TestDuplicateActionsAreRefused(t *testing.T) {
 
 // demoPlugins wires the standard plugins to the demo workspace.
 func demoPlugins(ws *mock.Workspace, loc *time.Location) []plugin.Plugin {
+	settings := UserSettings{Store: store.NewMemory()}
 	return []plugin.Plugin{
-		gmailplugin.New(ws.Mail()),
-		calendarplugin.New(ws.Calendar(), loc),
+		gmailplugin.New(ws.Mail(), settings),
+		calendarplugin.New(ws.Calendar(), loc, settings),
 		meetplugin.New(ws.Meetings(), ws.Calendar(), loc),
 		slackplugin.New(ws.Chat()),
 	}

@@ -51,6 +51,23 @@ func New(now time.Time) *Workspace {
 			Body: "Hi,\n\nBefore we renew in November, our team wants to discuss the SSO outages last month. Could you or someone from engineering leadership join a call next week?\n\nThanks,\nDana Kim\nVP IT"},
 		{ID: "m5", ThreadID: "t5", From: "Weekly Digest <digest@example.com>", To: "me@example.com", Subject: "Top products this week",
 			Snippet: "This week's top launches…", Unread: false, Date: now.Add(-30 * time.Hour), Body: "This week's top launches…"},
+		{ID: "m6", ThreadID: "t11", From: "Sara Okafor <sara@example.com>", To: "me@example.com", Subject: "Re: Eng hiring plan",
+			Snippet: "Thanks, looking forward to it.", Date: now.Add(-5 * 24 * time.Hour), Body: "Thanks, looking forward to it.\n\nSara"},
+
+		// Mail the user sent (in:sent). The vendor and finance threads have no
+		// reply yet; the Sara and Priya ones contain promises.
+		{ID: "s1", ThreadID: "t10", From: "me@example.com", To: "Acme Supplies <quotes@acme-supplies.example.com>", Subject: "Quote for 40 laptops",
+			Snippet: "Hi team, could you send a quote for 40 laptops…", Sent: true, Date: now.Add(-4 * 24 * time.Hour),
+			Body: "Hi team,\n\nCould you send a quote for 40 laptops (14-inch, 32 GB RAM) with delivery by the end of the month?\n\nThanks,\nAlex"},
+		{ID: "s2", ThreadID: "t12", From: "me@example.com", To: "Finance <finance@example.com>", Subject: "September numbers for the board deck",
+			Snippet: "Hi both, can you send the final September revenue numbers…", Sent: true, Date: now.Add(-3 * 24 * time.Hour),
+			Body: "Hi both,\n\nCan you send the final September revenue numbers? Marcus needs them for the board deck.\n\nThanks,\nAlex"},
+		{ID: "s3", ThreadID: "t11", From: "me@example.com", To: "Sara Okafor <sara@example.com>", Subject: "Eng hiring plan",
+			Snippet: "Hi Sara, I'll send you the updated hiring plan…", Sent: true, Date: now.Add(-6 * 24 * time.Hour),
+			Body: "Hi Sara,\n\nGood chat today. I'll send you the updated hiring plan by Friday, including the two staff roles we discussed.\n\nCheers,\nAlex"},
+		{ID: "s4", ThreadID: "t1", From: "me@example.com", To: "Priya Shah <priya@example.com>", Subject: "Re: Term sheet — need your sign-off by Friday",
+			Snippet: "Thanks Priya. I will review clauses 4.2 and 7.1…", Sent: true, Date: now.Add(-1 * time.Hour),
+			Body: "Thanks Priya.\n\nI will review clauses 4.2 and 7.1 tonight and get back to you with my decision by Thursday.\n\nBest,\nAlex\n\nOn Mon, Priya Shah wrote:\n> Attached is the revised term sheet."},
 	}
 	w.events = []provider.Event{
 		{ID: "e1", Title: "Exec staff sync", Start: at(0, 9, 30), End: at(0, 10, 15), Attendees: []string{"marcus@example.com", "sara@example.com"},
@@ -81,6 +98,7 @@ func New(now time.Time) *Workspace {
 		{Channel: "C2", ChannelName: "incidents", User: "Sara", Text: "<@me> heads up — this may affect a key customer. Update in 30 min.", TS: "1000.2", Time: now.Add(-35 * time.Minute)},
 		{Channel: "C1", ChannelName: "exec-team", User: "Marcus", Text: "<@me> can you confirm the hiring plan numbers for the board deck by Wednesday?", TS: "1000.3", Time: now.Add(-3 * time.Hour)},
 		{Channel: "D1", ChannelName: "dm:Sara", User: "Sara", Text: "Can we move our 1:1 to the afternoon?", TS: "1000.4", Time: now.Add(-25 * time.Minute)},
+		{Channel: "C1", ChannelName: "exec-team", User: "me", Text: "Yes, I'll confirm the hiring plan numbers by Wednesday.", TS: "1000.5", Time: now.Add(-150 * time.Minute)},
 	}
 	return w
 }
@@ -108,6 +126,7 @@ func (m mailView) ListMessages(_ context.Context, query string, max int) ([]prov
 	defer m.w.mu.Unlock()
 	q := strings.ToLower(query)
 	unreadOnly := strings.Contains(q, "is:unread")
+	sentOnly := strings.Contains(q, "in:sent")
 	var terms []string
 	for _, t := range strings.Fields(q) {
 		if !strings.Contains(t, ":") {
@@ -116,7 +135,7 @@ func (m mailView) ListMessages(_ context.Context, query string, max int) ([]prov
 	}
 	var out []provider.Email
 	for _, e := range m.w.emails {
-		if unreadOnly && !e.Unread {
+		if (unreadOnly && !e.Unread) || e.Sent != sentOnly {
 			continue
 		}
 		hay := strings.ToLower(e.From + " " + e.Subject + " " + e.Body)
@@ -148,6 +167,24 @@ func (m mailView) GetMessage(_ context.Context, id string) (provider.Email, erro
 		}
 	}
 	return provider.Email{}, fmt.Errorf("message %q not found", id)
+}
+
+func (m mailView) Thread(_ context.Context, threadID string) ([]provider.Email, error) {
+	m.w.mu.Lock()
+	defer m.w.mu.Unlock()
+	var out []provider.Email
+	for _, e := range m.w.emails {
+		if e.ThreadID == threadID {
+			c := e
+			c.Body = ""
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("thread %q not found", threadID)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date.Before(out[j].Date) })
+	return out, nil
 }
 
 func (m mailView) CreateDraft(_ context.Context, msg provider.OutgoingEmail) (string, error) {
@@ -457,6 +494,14 @@ func (c chatView) Search(_ context.Context, query string, limit int) ([]provider
 	c.w.mu.Lock()
 	defer c.w.mu.Unlock()
 	var out []provider.ChatMessage
+	if strings.Contains(query, "from:me") { // Slack search syntax: the user's own messages
+		for i := len(c.w.msgs) - 1; i >= 0; i-- {
+			if u := c.w.msgs[i].User; u == "you" || u == "me" {
+				out = append(out, c.w.msgs[i])
+			}
+		}
+		return out, nil
+	}
 	for _, m := range c.w.msgs {
 		if strings.Contains(strings.ToLower(m.Text+" "+m.User), strings.ToLower(query)) {
 			out = append(out, m)

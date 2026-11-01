@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sanjayrj/ai-bot/internal/llm"
+	"github.com/sanjayrj/ai-bot/internal/plugin"
 	"github.com/sanjayrj/ai-bot/internal/provider"
 	"github.com/sanjayrj/ai-bot/internal/store"
 )
@@ -53,10 +54,12 @@ type Briefing struct {
 
 // Overview is the raw, non-AI snapshot shown on the dashboard.
 type Overview struct {
-	Emails      []provider.Email  `json:"emails"`
-	Events      []provider.Event  `json:"events"`
-	Errors      map[string]string `json:"errors,omitempty"`
-	GeneratedAt time.Time         `json:"generated_at"`
+	Emails []provider.Email `json:"emails"`
+	Events []provider.Event `json:"events"`
+	// Priority explains how important each email is, keyed by email ID.
+	Priority    map[string]plugin.Verdict `json:"priority,omitempty"`
+	Errors      map[string]string         `json:"errors,omitempty"`
+	GeneratedAt time.Time                 `json:"generated_at"`
 }
 
 // Status reports which integrations are usable.
@@ -71,6 +74,7 @@ type Status struct {
 	Calendar         bool   `json:"calendar"`
 	Timezone         string `json:"timezone"`
 	RequireApproval  bool   `json:"require_approval"`
+	UndoSeconds      int    `json:"undo_seconds"`
 	Storage          string `json:"storage"`
 }
 
@@ -107,6 +111,7 @@ type Config struct {
 	GoogleConfigured bool
 	Store            store.Store // conversation history; nil means in-memory
 	StoreKind        string      // "postgres" or "memory", for /api/status
+	UndoSeconds      int         // undo window the UI waits before approving
 }
 
 type service struct {
@@ -168,7 +173,7 @@ func (s *service) Chat(ctx context.Context, sessionID, message string) (ChatRepl
 	if err != nil {
 		return ChatReply{}, fmt.Errorf("loading conversation: %w", err)
 	}
-	history, reply, calls, runErr := s.cfg.Agent.Run(ctx, prev, message)
+	history, reply, calls, runErr := s.cfg.Agent.Run(withReason(ctx, message), prev, message)
 
 	// Save the turn (even a failed one, so the transcript shows it). Only the
 	// messages this turn added are appended; a failed run adds none.
@@ -218,12 +223,13 @@ func (s *service) DeleteConversation(ctx context.Context, id string) error {
 	return s.cfg.Store.Delete(ctx, uid, id)
 }
 
-const briefingPrompt = `Prepare my daily briefing. Check unread and recent inbox mail (last 2 days) and today's and tomorrow's calendar.
+const briefingPrompt = `Prepare my daily briefing. Check unread and recent inbox mail (last 2 days, ranked with triage_inbox if available), today's and tomorrow's calendar, and my follow-ups (find_my_commitments, find_slack_commitments and find_awaiting_replies, whichever exist).
 
 Format it in Markdown with these sections:
 ## Top priorities — the 3–5 things that most need me today, each with why and a suggested next step
 ## Today's schedule — times, who, and any prep needed; flag conflicts or back-to-backs
-## Needs a reply — emails waiting on me
+## Needs a reply — emails waiting on me, with why each matters
+## Follow-ups — promises I made that are due soon or overdue (say where: email or Slack), then emails that nobody has answered for 2+ days; offer to draft a nudge
 ## FYI — brief, skip noise
 
 Do not queue any actions; just brief me.`
@@ -232,7 +238,7 @@ func (s *service) Briefing(ctx context.Context) (Briefing, error) {
 	if err := s.aiReady(); err != nil {
 		return Briefing{}, err
 	}
-	_, md, calls, err := s.cfg.Agent.Run(ctx, nil, briefingPrompt)
+	_, md, calls, err := s.cfg.Agent.Run(withReason(ctx, "Daily brief"), nil, briefingPrompt)
 	if err != nil {
 		return Briefing{ToolCalls: calls}, err
 	}
@@ -263,6 +269,9 @@ func (s *service) Overview(ctx context.Context) (Overview, error) {
 			fail("gmail", err)
 		}
 		ov.Emails = v
+		if sorter := s.cfg.Tools.Sorter(); sorter != nil && len(v) > 0 {
+			ov.Priority, _ = sorter.SortEmails(ctx, v)
+		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -312,6 +321,7 @@ func (s *service) Status(context.Context) (Status, error) {
 		Calendar:         s.cfg.Calendar.Connected(),
 		Timezone:         zoneName(s.cfg.Location),
 		RequireApproval:  s.cfg.Tools.RequiresApproval(),
+		UndoSeconds:      s.cfg.UndoSeconds,
 		Storage:          s.cfg.StoreKind,
 	}, nil
 }

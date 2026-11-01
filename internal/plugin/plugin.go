@@ -11,6 +11,8 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/sanjayrj/ai-bot/internal/provider"
 )
 
 // Tool is one function the model can call.
@@ -67,4 +69,32 @@ type Deduper interface {
 // Guide adds plugin-specific instructions to the model's system prompt.
 type Guide interface {
 	Guidance() string
+}
+
+// Settings keeps small per-user preferences for a plugin (rules, a learned
+// profile). Implementations are bound to the signed-in user through ctx.
+// Load reports false when nothing is saved under key.
+type Settings interface {
+	Load(ctx context.Context, key string, v any) (bool, error)
+	Save(ctx context.Context, key string, v any) error
+}
+
+// Verdict is how important an email is and why.
+type Verdict struct {
+	Priority string   `json:"priority"` // "important", "normal" or "low"
+	Reasons  []string `json:"reasons"`
+}
+
+// Sorter is implemented by a mail plugin that can rank emails and explain
+// each ranking (shown next to unread mail in the UI).
+type Sorter interface {
+	SortEmails(ctx context.Context, emails []provider.Email) (map[string]Verdict, error)
+}
+
+// LoadSetting is Settings.Load that treats a nil Settings as empty.
+func LoadSetting(ctx context.Context, s Settings, key string, v any) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	return s.Load(ctx, key, v)
 }

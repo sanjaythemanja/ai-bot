@@ -2,28 +2,23 @@ import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  CalendarClock,
-  CalendarPlus,
-  CalendarX,
-  Check,
-  ChevronDown,
-  FileX,
-  Hash,
-  Mail,
-  MapPin,
-  RefreshCw,
-  Send,
-  Sparkles,
-  Video,
-  X,
-} from "lucide-react";
-import { api, type Action, type CalEvent, type Email } from "../api";
+import { MapPin, MoreHorizontal, RefreshCw, Sparkles, Video, X } from "lucide-react";
+import { api, type Action, type CalEvent, type Email, type Verdict } from "../api";
 import { cleanText, fmtRelative, fmtTime, senderName } from "../lib/format";
-import { ActionSnapshot } from "./Preview";
+import { ActionCard, reasonText } from "./ActionCard";
 import { Avatar, Button, IconButton, Pill, SectionHeader, Thinking } from "./ui";
 
-export function RightRail({ requireApproval, onClose }: { requireApproval: boolean; onClose?: () => void }) {
+export function RightRail({
+  requireApproval,
+  undoSeconds,
+  onOpenActivity,
+  onClose,
+}: {
+  requireApproval: boolean;
+  undoSeconds: number;
+  onOpenActivity: () => void;
+  onClose?: () => void;
+}) {
   const overview = useQuery({ queryKey: ["overview"], queryFn: api.overview, refetchInterval: 120_000 });
   const actions = useQuery({ queryKey: ["actions"], queryFn: api.actions, refetchInterval: 30_000 });
 
@@ -63,7 +58,7 @@ export function RightRail({ requireApproval, onClose }: { requireApproval: boole
             ) : (
               <div className="space-y-2.5">
                 {pending.map((a) => (
-                  <ActionCard key={a.id} a={a} />
+                  <ActionCard key={a.id} a={a} undoSeconds={undoSeconds} />
                 ))}
               </div>
             )}
@@ -86,11 +81,11 @@ export function RightRail({ requireApproval, onClose }: { requireApproval: boole
           {overview.data?.errors?.gmail ? (
             <p className="text-sm text-danger">{overview.data.errors.gmail}</p>
           ) : (
-            <Inbox emails={overview.data?.emails ?? []} />
+            <Inbox emails={overview.data?.emails ?? []} priority={overview.data?.priority ?? {}} />
           )}
         </section>
 
-        {recent.length > 0 && <RecentActions actions={recent} title={requireApproval ? "Recently resolved" : "Activity"} />}
+        <RecentActions actions={recent} title={requireApproval ? "Recently resolved" : "Activity"} onOpenActivity={onOpenActivity} />
       </div>
     </aside>
   );
@@ -185,112 +180,124 @@ function NowLine() {
   );
 }
 
-function Inbox({ emails }: { emails: Email[] }) {
+const RANK = { important: 0, normal: 1, low: 2 } as const;
+
+function Inbox({ emails, priority }: { emails: Email[]; priority: Record<string, Verdict> }) {
   if (emails.length === 0) return <p className="text-sm text-ink-3">Inbox is quiet.</p>;
+  const sorted = [...emails].sort((a, b) => RANK[priority[a.id]?.priority ?? "normal"] - RANK[priority[b.id]?.priority ?? "normal"]);
   return (
     <ul className="space-y-0.5">
-      {emails.slice(0, 8).map((m) => {
-        const name = senderName(m.from);
-        return (
-          <li key={m.id} className="flex gap-3 rounded-xl px-2 py-2 hover:bg-sunken/60">
-            <Avatar name={name} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate text-[13px] font-semibold text-ink">{name}</span>
-                <span className="shrink-0 text-[11px] text-ink-3">{fmtRelative(m.date)}</span>
-              </div>
-              <div className="truncate text-[13px] text-ink">{cleanText(m.subject) || "(no subject)"}</div>
-              <div className="line-clamp-1 text-[12px] text-ink-3">{cleanText(m.snippet)}</div>
-            </div>
-          </li>
-        );
-      })}
+      {sorted.slice(0, 8).map((m) => (
+        <InboxRow key={m.id} m={m} v={priority[m.id]} />
+      ))}
     </ul>
   );
 }
 
-const KIND: Record<string, { icon: typeof Mail; label: string }> = {
-  send_email: { icon: Mail, label: "Send email" },
-  send_draft: { icon: Send, label: "Send draft" },
-  delete_draft: { icon: FileX, label: "Delete draft" },
-  create_event: { icon: CalendarPlus, label: "New event" },
-  update_event: { icon: CalendarClock, label: "Change event" },
-  delete_event: { icon: CalendarX, label: "Cancel event" },
-  slack_post: { icon: Hash, label: "Slack message" },
-};
+// Bare address of "Name <a@b.com>".
+const addrOf = (from: string) => (from.match(/<([^>]+)>/)?.[1] ?? from).trim().toLowerCase();
 
-function ActionCard({ a }: { a: Action }) {
+function InboxRow({ m, v }: { m: Email; v?: Verdict }) {
   const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const resolve = useMutation({
-    mutationFn: (approve: boolean) => (approve ? api.approve(a.id) : api.reject(a.id)),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["actions"] });
+  const [menu, setMenu] = useState(false);
+  const name = senderName(m.from);
+  const addr = addrOf(m.from);
+  const rule = useMutation({
+    mutationFn: (p: "important" | "low") => api.callTool("add_sorting_rule", { match: addr, priority: p }),
+    onSuccess: () => {
+      setMenu(false);
       qc.invalidateQueries({ queryKey: ["overview"] });
     },
   });
-  const k = KIND[a.kind] ?? { icon: Mail, label: a.kind };
-  const Icon = k.icon;
-
+  const dot = v?.priority === "important" ? "bg-clay" : v?.priority === "low" ? "bg-line-strong" : "bg-forest/50";
   return (
-    <div className="rounded-2xl border border-amber/30 bg-surface p-3.5 rise">
-      <div className="mb-2.5 flex items-center gap-2">
-        <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-amber-soft text-amber">
-          <Icon size={13} />
-        </span>
-        <span className="text-[13px] font-semibold text-ink">{k.label}</span>
-        <span className="ml-auto text-[11px] text-ink-3">Preview</span>
+    <li className={`group relative flex gap-3 rounded-xl px-2 py-2 hover:bg-sunken/60 ${v?.priority === "low" ? "opacity-65" : ""}`}>
+      <Avatar name={name} />
+      <div className="min-w-0 flex-1">
+        <div className={`flex items-baseline justify-between gap-2 ${v ? "pr-7 xl:pr-0 xl:group-hover:pr-7" : ""}`}>
+          <span className="truncate text-[13px] font-semibold text-ink">{name}</span>
+          <span className="shrink-0 text-[11px] text-ink-3">{fmtRelative(m.date)}</span>
+        </div>
+        <div className="truncate text-[13px] text-ink">{cleanText(m.subject) || "(no subject)"}</div>
+        {v ? (
+          <div className="mt-0.5 flex items-start gap-1.5 text-[12px] text-ink-3" title={v.reasons.join("\n")}>
+            <span className={`mt-[5px] size-1.5 shrink-0 rounded-full ${dot}`} aria-hidden />
+            <span className="line-clamp-2">
+              <span className="font-medium text-ink-2">{v.priority === "important" ? "Important" : v.priority === "low" ? "Low" : "Normal"}:</span>{" "}
+              {v.reasons[0]}
+            </span>
+          </div>
+        ) : (
+          <div className="line-clamp-1 text-[12px] text-ink-3">{cleanText(m.snippet)}</div>
+        )}
       </div>
-      <ActionSnapshot a={a} />
-      {open && (
-        <pre className="mt-3 max-h-56 overflow-auto rounded-lg bg-sunken p-2.5 text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-2">
-          {JSON.stringify(a.payload, null, 2)}
-        </pre>
-      )}
-      {resolve.error && <p className="mt-2 text-[12px] text-danger">{(resolve.error as Error).message}</p>}
-      <div className="mt-3 flex items-center gap-2">
-        <Button size="sm" variant="primary" onClick={() => resolve.mutate(true)} disabled={resolve.isPending}>
-          <Check size={14} /> Approve
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => resolve.mutate(false)} disabled={resolve.isPending}>
-          Reject
-        </Button>
+      {v && (
         <button
-          onClick={() => setOpen((o) => !o)}
-          className="ml-auto inline-flex items-center gap-0.5 text-[12px] text-ink-3 hover:text-ink-2"
-          aria-expanded={open}
+          onClick={() => setMenu((o) => !o)}
+          aria-label={`Change priority for ${name}`}
+          aria-expanded={menu}
+          className="absolute top-1.5 right-1.5 inline-flex size-6 items-center justify-center rounded-md bg-paper text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 hover:text-ink max-xl:opacity-100"
         >
-          Raw
-          <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+          <MoreHorizontal size={14} />
         </button>
-      </div>
-    </div>
+      )}
+      {menu && (
+        <div className="absolute top-8 right-1.5 z-10 w-56 rounded-xl border border-line bg-surface p-1 text-[13px] shadow-lg" role="menu">
+          <div className="px-2.5 pt-1.5 pb-1 text-[11px] text-ink-3">Always treat mail from {addr} as…</div>
+          {(["important", "low"] as const).map((p) => (
+            <button
+              key={p}
+              role="menuitem"
+              disabled={rule.isPending}
+              onClick={() => rule.mutate(p)}
+              className="block w-full rounded-lg px-2.5 py-1.5 text-left text-ink hover:bg-sunken"
+            >
+              {p === "important" ? "Important" : "Low priority"}
+            </button>
+          ))}
+          {rule.error && <p className="px-2.5 py-1 text-[12px] text-danger">{(rule.error as Error).message}</p>}
+        </div>
+      )}
+    </li>
   );
 }
 
-function RecentActions({ actions, title }: { actions: Action[]; title: string }) {
+function RecentActions({ actions, title, onOpenActivity }: { actions: Action[]; title: string; onOpenActivity: () => void }) {
   return (
     <section>
-      <SectionHeader title={title} />
-      <ul className="space-y-1.5">
-        {actions.map((a) => (
-          <li key={a.id} className="flex items-start gap-2 text-[13px]">
-            <span className="mt-0.5">
-              {a.status === "executed" ? (
-                <Pill tone="forest">Done</Pill>
-              ) : a.status === "failed" ? (
-                <Pill tone="danger">Failed</Pill>
-              ) : (
-                <Pill>Rejected</Pill>
-              )}
-            </span>
-            <span className="min-w-0 flex-1 text-ink-2" title={a.error || a.result}>
-              <span className="line-clamp-2">{a.summary}</span>
-              {a.error && <span className="line-clamp-2 text-[12px] text-danger">{a.error}</span>}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <SectionHeader
+        title={title}
+        action={
+          <button onClick={onOpenActivity} className="text-[12px] font-medium text-forest hover:underline">
+            See all
+          </button>
+        }
+      />
+      {actions.length === 0 ? (
+        <p className="text-sm text-ink-3">Nothing yet. Everything the assistant does will be listed here.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {actions.map((a) => (
+            <li key={a.id} className="flex items-start gap-2 text-[13px]">
+              <span className="mt-0.5">
+                <StatusPill status={a.status} />
+              </span>
+              <span className="min-w-0 flex-1 text-ink-2" title={a.error || a.result}>
+                <span className="line-clamp-2">{a.summary}</span>
+                {a.error && <span className="line-clamp-2 text-[12px] text-danger">{a.error}</span>}
+                {reasonText(a.reason) && <span className="line-clamp-1 text-[12px] text-ink-3">{reasonText(a.reason)}</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
+}
+
+export function StatusPill({ status }: { status: Action["status"] }) {
+  if (status === "executed") return <Pill tone="forest">Done</Pill>;
+  if (status === "failed") return <Pill tone="danger">Failed</Pill>;
+  if (status === "pending") return <Pill tone="amber">Waiting</Pill>;
+  return <Pill>Rejected</Pill>;
 }

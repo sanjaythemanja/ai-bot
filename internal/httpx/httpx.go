@@ -31,7 +31,7 @@ func SecurityHeaders(hsts bool, next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		h.Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=()")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		if hsts {
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")

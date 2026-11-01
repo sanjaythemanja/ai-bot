@@ -33,6 +33,9 @@ type Config struct {
 	// RequireApproval makes send_email/create_event wait for the user.
 	// Set in config.yaml (require_approval), overridable by REQUIRE_APPROVAL.
 	RequireApproval bool
+	// UndoSeconds is how long an approved action waits (and can be undone)
+	// before it runs. config.yaml undo_seconds; 0 turns the window off.
+	UndoSeconds int
 
 	// DatabaseURL, when set, stores users, sessions, conversations and
 	// actions in PostgreSQL.
@@ -95,6 +98,14 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	undo := 30
+	if file.UndoSeconds != nil {
+		undo = *file.UndoSeconds
+	}
+	if undo < 0 || undo > 120 {
+		return Config{}, fmt.Errorf("undo_seconds must be between 0 and 120, got %d", undo)
+	}
+
 	c := Config{
 		Env:                strings.ToLower(env("APP_ENV", "local")),
 		Addr:               ":" + port,
@@ -104,6 +115,7 @@ func Load() (Config, error) {
 		LLM:                loadLLM(),
 		AgentAPIToken:      os.Getenv("AGENT_API_TOKEN"),
 		RequireApproval:    approval,
+		UndoSeconds:        undo,
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		AppSecret:          os.Getenv("APP_SECRET"),
 		AllowedEmails:      os.Getenv("ALLOWED_EMAILS"),
@@ -194,6 +206,7 @@ func (c Config) LLMEnabled() bool { return c.LLM.APIKey != "" || c.LLM.BaseURL !
 // fileConfig is the shape of config.yaml. Pointers tell "unset" from false.
 type fileConfig struct {
 	RequireApproval *bool `yaml:"require_approval"`
+	UndoSeconds     *int  `yaml:"undo_seconds"`
 }
 
 // loadFile reads config.yaml; a missing file just means defaults.

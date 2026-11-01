@@ -55,6 +55,13 @@ type Connections interface {
 	DeleteConnection(ctx context.Context, userID, provider string) error
 }
 
+// Settings stores small per-user JSON preferences (time rules, sorting
+// rules, a learned writing style). Get returns nil, nil when unset.
+type Settings interface {
+	GetSetting(ctx context.Context, userID, key string) ([]byte, error)
+	PutSetting(ctx context.Context, userID, key string, value []byte) error
+}
+
 // ErrNotConnected means the user hasn't connected that provider.
 var ErrNotConnected = errors.New("not connected")
 

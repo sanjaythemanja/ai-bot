@@ -116,7 +116,12 @@ function EmailSnapshot({ mail, removing = false }: { mail: Mail; removing?: bool
             </span>
           )}
           <div className={`text-[14px] font-semibold text-ink ${removing ? "line-through" : ""}`}>
-            {mail.subject?.trim() || <span className="font-normal text-danger">No subject</span>}
+            {mail.subject?.trim() ||
+              (mail.reply_to_id || mail.in_reply_to ? (
+                <span className="font-normal text-ink-3">Re: same subject as the thread</span>
+              ) : (
+                <span className="font-normal text-danger">No subject</span>
+              ))}
           </div>
         </div>
         {body ? (

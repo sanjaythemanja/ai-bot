@@ -146,6 +146,16 @@ func (t *Toolbox) Guidance() string {
 	return strings.Join(parts, "\n")
 }
 
+// Sorter returns the first plugin that can rank emails, if any.
+func (t *Toolbox) Sorter() plugin.Sorter {
+	for _, p := range t.plugins {
+		if s, ok := p.(plugin.Sorter); ok {
+			return s
+		}
+	}
+	return nil
+}
+
 // Plugins lists registered plugin names (for status displays).
 func (t *Toolbox) Plugins() []string {
 	out := make([]string, 0, len(t.plugins))
@@ -179,7 +189,7 @@ func (t *Toolbox) queue(ctx context.Context, p plugin.Proposal) (any, error) {
 				"If it should be replaced entirely, call cancel_pending_action on it first", dup.ID, dup.Summary, dup.ID)
 		}
 	}
-	a, err := t.actions.Add(ctx, uid, p.Kind, p.Summary, p.Payload)
+	a, err := t.actions.Add(ctx, uid, p.Kind, p.Summary, reasonFrom(ctx), p.Payload)
 	if err != nil {
 		return nil, err
 	}

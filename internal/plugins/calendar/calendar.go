@@ -25,12 +25,13 @@ const (
 
 // Plugin implements plugin.Plugin, Executor, Editor, Deduper and Guide.
 type Plugin struct {
-	cal   provider.Calendar
-	clock plugin.Clock
+	cal      provider.Calendar
+	clock    plugin.Clock
+	settings plugin.Settings // protected-time rules; may be nil
 }
 
-func New(cal provider.Calendar, loc *time.Location) *Plugin {
-	return &Plugin{cal: cal, clock: plugin.Clock{Loc: loc}}
+func New(cal provider.Calendar, loc *time.Location, settings plugin.Settings) *Plugin {
+	return &Plugin{cal: cal, clock: plugin.Clock{Loc: loc}, settings: settings}
 }
 
 var (
@@ -45,7 +46,8 @@ func (p *Plugin) Name() string { return "calendar" }
 func (p *Plugin) Guidance() string {
 	return `- Calendar: check the calendar and use find_free_slots before proposing times; use the user's time zone. Find event IDs with list_events first; never guess IDs.
 - To change a meeting use update_event (title, time, location, description, attendees); to add people use add_attendees so Google sends them the invite with the time and link. delete_event cancels.
-- Colleagues: use find_common_free_slots or check_availability (busy times only), then create_event with them as attendees. To see a colleague's meetings call list_events with calendar set to their email; if it isn't shared, say so. Never present busy blocks as meeting details.`
+- Colleagues: use find_common_free_slots or check_availability (busy times only), then create_event with them as attendees. To see a colleague's meetings call list_events with calendar set to their email; if it isn't shared, say so. Never present busy blocks as meeting details.
+- Protected time: the user's working hours and protected blocks (set_time_rules) are skipped by slot search; mention skipped blocks when relevant. If a booking's summary carries a ⚠ warning (a clash or protected time), tell the user before they approve; only book over protected time when they insist.`
 }
 
 // eventChanges is a partial edit to an event. attendees replaces the list;
@@ -75,10 +77,18 @@ var changeProps = map[string]any{
 // eventUpdate is the payload of an update_event action. Before snapshots the
 // event when queued so the approval card can show before and after.
 type eventUpdate struct {
-	EventID string               `json:"event_id"`
-	Title   string               `json:"current_title"`
-	Update  provider.EventUpdate `json:"update"`
-	Before  *provider.Event      `json:"before,omitempty"`
+	EventID  string               `json:"event_id"`
+	Title    string               `json:"current_title"`
+	Update   provider.EventUpdate `json:"update"`
+	Before   *provider.Event      `json:"before,omitempty"`
+	Warnings []string             `json:"warnings,omitempty"`
+}
+
+// newEvent is the payload of a create_event action; Warnings are the clashes
+// found when it was proposed, shown on the approval card.
+type newEvent struct {
+	provider.NewEvent
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // eventRef is the payload of a delete_event action.
@@ -91,7 +101,7 @@ type eventRef struct {
 
 func (p *Plugin) Tools() []plugin.Tool {
 	people := plugin.Strs(`Email addresses of colleagues; use "me" for the user`)
-	return []plugin.Tool{
+	return append(p.ruleTools(), []plugin.Tool{
 		{
 			Name: "list_events",
 			Description: "List calendar events in a time range (RFC 3339 timestamps). Returns event IDs for get/update/delete_event. " +
@@ -132,12 +142,13 @@ func (p *Plugin) Tools() []plugin.Tool {
 		},
 		{
 			Name:        "find_free_slots",
-			Description: "Find open slots on a given day within working hours, based on the user's calendar.",
+			Description: "Find open slots on a given day within the user's working hours, skipping their protected time, based on their calendar.",
 			Properties: map[string]any{
-				"date":             plugin.Str("Day to search, YYYY-MM-DD"),
-				"duration_minutes": plugin.Num("Required slot length in minutes"),
-				"day_start":        plugin.Str("Working day start HH:MM, default 09:00"),
-				"day_end":          plugin.Str("Working day end HH:MM, default 18:00"),
+				"date":              plugin.Str("Day to search, YYYY-MM-DD"),
+				"duration_minutes":  plugin.Num("Required slot length in minutes"),
+				"day_start":         plugin.Str("Search from HH:MM; default the user's work start (or 09:00)"),
+				"day_end":           plugin.Str("Search until HH:MM; default the user's work end (or 18:00)"),
+				"include_protected": map[string]any{"type": "boolean", "description": "Also offer the user's protected time (only if they ask)"},
 			},
 			Required: []string{"date", "duration_minutes"},
 			Run: func(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -145,7 +156,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 				if err != nil {
 					return nil, err
 				}
-				return p.FreeSlots(ctx, in.Date, in.Duration, in.DayStart, in.DayEnd)
+				return p.searchSlots(ctx, in, nil)
 			},
 		},
 		{
@@ -159,11 +170,12 @@ func (p *Plugin) Tools() []plugin.Tool {
 			Name:        "find_common_free_slots",
 			Description: "Find times on a day when the user and all the given people are free (Google free/busy), e.g. to schedule a meeting. People whose calendars can't be read are listed in unknown and NOT counted as free.",
 			Properties: map[string]any{
-				"people":           people,
-				"date":             plugin.Str("Day to search, YYYY-MM-DD"),
-				"duration_minutes": plugin.Num("Required slot length in minutes"),
-				"day_start":        plugin.Str("Working day start HH:MM, default 09:00"),
-				"day_end":          plugin.Str("Working day end HH:MM, default 18:00"),
+				"people":            people,
+				"date":              plugin.Str("Day to search, YYYY-MM-DD"),
+				"duration_minutes":  plugin.Num("Required slot length in minutes"),
+				"day_start":         plugin.Str("Search from HH:MM; default the user's work start (or 09:00)"),
+				"day_end":           plugin.Str("Search until HH:MM; default the user's work end (or 18:00)"),
+				"include_protected": map[string]any{"type": "boolean", "description": "Also offer the user's protected time (only if they ask)"},
 			},
 			Required: []string{"people", "date", "duration_minutes"},
 			Run:      p.commonSlots,
@@ -177,7 +189,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 			},
 			Required: []string{"title", "start", "end"},
 			Write:    true,
-			Propose: func(_ context.Context, raw json.RawMessage) (plugin.Proposal, error) {
+			Propose: func(ctx context.Context, raw json.RawMessage) (plugin.Proposal, error) {
 				in, err := plugin.Decode[struct {
 					Title, Description, Location, Start, End string
 					Attendees                                []string
@@ -197,7 +209,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 					return plugin.Proposal{}, errors.New("end must be after start")
 				}
 				ev := provider.NewEvent{Title: in.Title, Description: in.Description, Location: in.Location, Start: start, End: end, Attendees: in.Attendees}
-				return plugin.Proposal{Kind: KindCreateEvent, Summary: p.newSummary(ev), Payload: ev}, nil
+				return p.createProposal(ctx, ev), nil
 			},
 		},
 		{
@@ -222,8 +234,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 				if err != nil {
 					return plugin.Proposal{}, err
 				}
-				pl := eventUpdate{EventID: cur.ID, Title: cur.Title, Update: u, Before: &cur}
-				return plugin.Proposal{Kind: KindUpdateEvent, Summary: p.updateSummary(cur.Title, cur, u), Payload: pl}, nil
+				return p.updateProposal(ctx, eventUpdate{EventID: cur.ID, Title: cur.Title, Update: u, Before: &cur}, cur), nil
 			},
 		},
 		{
@@ -245,7 +256,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 				return plugin.Proposal{Kind: KindDeleteEvent, Summary: fmt.Sprintf("Cancel %q %s", cur.Title, p.clock.Short(cur.Start)), Payload: pl}, nil
 			},
 		},
-	}
+	}...)
 }
 
 // ---- planning edits ----
@@ -378,6 +389,21 @@ func (p *Plugin) newSummary(ev provider.NewEvent) string {
 	return s
 }
 
+func (p *Plugin) createProposal(ctx context.Context, ev provider.NewEvent) plugin.Proposal {
+	w := p.warnings(ctx, ev.Start, ev.End, "")
+	return plugin.Proposal{Kind: KindCreateEvent, Summary: withWarnings(p.newSummary(ev), w), Payload: newEvent{ev, w}}
+}
+
+// updateProposal checks the new time (if it moves) against rules and events.
+func (p *Plugin) updateProposal(ctx context.Context, pl eventUpdate, cur provider.Event) plugin.Proposal {
+	pl.Warnings = nil
+	if pl.Update.Start != nil || pl.Update.End != nil {
+		after := applyUpdate(cur, pl.Update)
+		pl.Warnings = p.warnings(ctx, after.Start, after.End, cur.ID)
+	}
+	return plugin.Proposal{Kind: KindUpdateEvent, Summary: withWarnings(p.updateSummary(cur.Title, cur, pl.Update), pl.Warnings), Payload: pl}
+}
+
 // ---- Executor ----
 
 func (p *Plugin) Kinds() []string { return []string{KindCreateEvent, KindUpdateEvent, KindDeleteEvent} }
@@ -444,7 +470,7 @@ func (p *Plugin) Edit(ctx context.Context, kind string, payload, raw json.RawMes
 		}
 		ev = applyUpdate(ev, u)
 		ne = provider.NewEvent{Title: ev.Title, Description: ev.Description, Location: ev.Location, Start: ev.Start, End: ev.End, Attendees: ev.Attendees}
-		return plugin.Proposal{Kind: kind, Summary: p.newSummary(ne), Payload: ne}, nil
+		return p.createProposal(ctx, ne), nil
 	case KindUpdateEvent:
 		var pl eventUpdate
 		if err := json.Unmarshal(payload, &pl); err != nil {
@@ -459,7 +485,7 @@ func (p *Plugin) Edit(ctx context.Context, kind string, payload, raw json.RawMes
 			return plugin.Proposal{}, err
 		}
 		pl.Update = overlay(pl.Update, d)
-		return plugin.Proposal{Kind: kind, Summary: p.updateSummary(cur.Title, cur, pl.Update), Payload: pl}, nil
+		return p.updateProposal(ctx, pl, cur), nil
 	}
 	return plugin.Proposal{}, fmt.Errorf("a %s action can't be edited", kind)
 }
@@ -490,11 +516,62 @@ func (p *Plugin) Duplicate(kind string, pending, proposed json.RawMessage) bool 
 // ---- free/busy ----
 
 type slotQuery struct {
-	People   []string `json:"people"`
-	Date     string   `json:"date"`
-	Duration int      `json:"duration_minutes"`
-	DayStart string   `json:"day_start"`
-	DayEnd   string   `json:"day_end"`
+	People           []string `json:"people"`
+	Date             string   `json:"date"`
+	Duration         int      `json:"duration_minutes"`
+	DayStart         string   `json:"day_start"`
+	DayEnd           string   `json:"day_end"`
+	IncludeProtected bool     `json:"include_protected"`
+}
+
+// searchSlots finds free time on q.Date honouring the user's rules. extra
+// is other people's busy time (for common slots).
+func (p *Plugin) searchSlots(ctx context.Context, q slotQuery, extra []provider.Busy) (map[string]any, error) {
+	if q.Duration <= 0 {
+		q.Duration = 30
+	}
+	r := p.rules(ctx)
+	from, to, err := p.dayWindow(q.Date, plugin.FirstNonEmpty(q.DayStart, r.WorkStart), plugin.FirstNonEmpty(q.DayEnd, r.WorkEnd))
+	if err != nil {
+		return nil, err
+	}
+	busy, err := p.ownBusy(ctx, from, to)
+	if err != nil {
+		return nil, err
+	}
+	busy = append(busy, extra...)
+	out := map[string]any{}
+	if !q.IncludeProtected {
+		var skipped []string
+		for _, b := range r.protectedOn(from) {
+			if b.Start.Before(to) && from.Before(b.End) {
+				busy = append(busy, b.Busy)
+				skipped = append(skipped, fmt.Sprintf("%s %s–%s", b.Label, b.Start.Format("15:04"), b.End.Format("15:04")))
+			}
+		}
+		if len(skipped) > 0 {
+			out["skipped_protected_time"] = skipped
+		}
+	}
+	if !r.works(from) {
+		out["note"] = from.Format("Monday") + " isn't one of the user's working days; mention it before booking."
+	}
+	out["slots"] = gaps(from, to, busy, time.Duration(q.Duration)*time.Minute)
+	return out, nil
+}
+
+func (p *Plugin) ownBusy(ctx context.Context, from, to time.Time) ([]provider.Busy, error) {
+	events, err := p.cal.ListEvents(ctx, "", from, to)
+	if err != nil {
+		return nil, err
+	}
+	var busy []provider.Busy
+	for _, e := range events {
+		if !e.AllDay {
+			busy = append(busy, provider.Busy{Start: e.Start, End: e.End})
+		}
+	}
+	return busy, nil
 }
 
 // Slot is a free time range.
@@ -543,15 +620,9 @@ func (p *Plugin) FreeSlots(ctx context.Context, date string, minutes int, daySta
 	if err != nil {
 		return nil, err
 	}
-	events, err := p.cal.ListEvents(ctx, "", from, to)
+	busy, err := p.ownBusy(ctx, from, to)
 	if err != nil {
 		return nil, err
-	}
-	var busy []provider.Busy
-	for _, e := range events {
-		if !e.AllDay {
-			busy = append(busy, provider.Busy{Start: e.Start, End: e.End})
-		}
 	}
 	return gaps(from, to, busy, time.Duration(minutes)*time.Minute), nil
 }
@@ -601,10 +672,8 @@ func (p *Plugin) commonSlots(ctx context.Context, raw json.RawMessage) (any, err
 	if err != nil {
 		return nil, err
 	}
-	if in.Duration <= 0 {
-		in.Duration = 30
-	}
-	from, to, err := p.dayWindow(in.Date, in.DayStart, in.DayEnd)
+	r := p.rules(ctx)
+	from, to, err := p.dayWindow(in.Date, plugin.FirstNonEmpty(in.DayStart, r.WorkStart), plugin.FirstNonEmpty(in.DayEnd, r.WorkEnd))
 	if err != nil {
 		return nil, err
 	}
@@ -622,7 +691,11 @@ func (p *Plugin) commonSlots(ctx context.Context, raw json.RawMessage) (any, err
 		}
 		busy = append(busy, res[id].Busy...)
 	}
-	out := map[string]any{"slots": gaps(from, to, busy, time.Duration(in.Duration)*time.Minute), "checked": ids}
+	out, err := p.searchSlots(ctx, in, busy)
+	if err != nil {
+		return nil, err
+	}
+	out["checked"] = ids
 	if len(unknown) > 0 {
 		out["unknown"] = unknown
 		out["note"] = "Some calendars could not be read; these slots only account for the others."

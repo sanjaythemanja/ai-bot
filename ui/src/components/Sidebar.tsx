@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Hash, LogOut, Monitor, Moon, PenSquare, Sun, Trash2, X } from "lucide-react";
+import { Hash, History, LogOut, Monitor, Moon, PenSquare, Sun, Trash2, X } from "lucide-react";
 import { api, type ConversationSummary, type Me, type Status } from "../api";
 import { dayBucket } from "../lib/format";
 import { Avatar, IconButton, Mark } from "./ui";
@@ -33,6 +33,7 @@ export function Sidebar({
   onNew,
   status,
   me,
+  onOpenActivity,
   onClose,
 }: {
   activeId: string;
@@ -40,6 +41,7 @@ export function Sidebar({
   onNew: () => void;
   status?: Status;
   me: Me;
+  onOpenActivity: () => void;
   onClose?: () => void;
 }) {
   const qc = useQueryClient();
@@ -92,6 +94,13 @@ export function Sidebar({
         >
           <PenSquare size={15} className="text-forest" />
           New conversation
+        </button>
+        <button
+          onClick={onOpenActivity}
+          className="mt-1 flex h-8 w-full items-center gap-2 rounded-lg px-3 text-[13px] text-ink-2 transition-colors hover:bg-sunken hover:text-ink"
+        >
+          <History size={15} className="text-ink-3" />
+          Activity log
         </button>
       </div>
 

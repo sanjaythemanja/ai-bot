@@ -85,6 +85,16 @@ const TOOL_LABELS: Record<string, string> = {
   search_slack: "Searched Slack",
   slack_mentions: "Checked Slack mentions",
   post_slack_message: "Slack message",
+  find_awaiting_replies: "Checked who hasn't replied",
+  find_my_commitments: "Checked your promises",
+  find_slack_commitments: "Checked Slack promises",
+  triage_inbox: "Sorted your inbox",
+  list_sorting_rules: "Checked sorting rules",
+  add_sorting_rule: "Saved a sorting rule",
+  remove_sorting_rule: "Removed a sorting rule",
+  get_time_rules: "Checked your protected time",
+  set_time_rules: "Saved your protected time",
+  get_writing_style: "Learned your writing style",
 };
 
 export const toolLabel = (name: string) => TOOL_LABELS[name] ?? name.replaceAll("_", " ");

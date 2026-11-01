@@ -21,23 +21,33 @@ const (
 	KindDeleteDraft = "delete_draft"
 )
 
-// Plugin implements plugin.Plugin, Executor, Editor, Deduper and Guide.
-type Plugin struct{ mail provider.Mail }
+// Plugin implements plugin.Plugin, Executor, Editor, Deduper, Guide and
+// Sorter.
+type Plugin struct {
+	mail     provider.Mail
+	settings plugin.Settings // sorting rules and the learned writing style; may be nil
+}
 
-func New(mail provider.Mail) *Plugin { return &Plugin{mail: mail} }
+func New(mail provider.Mail, settings plugin.Settings) *Plugin {
+	return &Plugin{mail: mail, settings: settings}
+}
 
 var (
 	_ plugin.Executor = (*Plugin)(nil)
 	_ plugin.Editor   = (*Plugin)(nil)
 	_ plugin.Deduper  = (*Plugin)(nil)
 	_ plugin.Guide    = (*Plugin)(nil)
+	_ plugin.Sorter   = (*Plugin)(nil)
 )
 
 func (p *Plugin) Name() string { return "gmail" }
 
 func (p *Plugin) Guidance() string {
-	return `- Email: use draft_email when the user wants to review wording; update_draft edits a draft (to/cc/bcc/subject/body). Write emails in a warm first-person voice; never invent facts, commitments or numbers.
-- When you email someone about a meeting, include its title, date, time (with time zone) and the event link.`
+	return `- Email: use draft_email when the user wants to review wording; update_draft edits a draft (to/cc/bcc/subject/body). Never invent facts, commitments or numbers.
+- Voice: before writing any email or reply, call get_writing_style (once per conversation) and write like the user: their greeting, sign-off, length and tone.
+- When you email someone about a meeting, include its title, date, time (with time zone) and the event link.
+- Priorities: use triage_inbox to decide what matters and always say why (its reasons). When the user corrects a priority ("Acme is always important", "ignore LinkedIn"), save it with add_sorting_rule.
+- Follow-ups: find_awaiting_replies lists mail nobody answered; find_my_commitments lists promises the user made. For a nudge, reply in the same thread (reply_to_id) briefly and politely.`
 }
 
 // changes is a partial edit to an email. List fields replace the whole list;
@@ -123,7 +133,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 	}
 	draftID := map[string]any{"draft_id": plugin.Str("Draft ID")}
 
-	return []plugin.Tool{
+	tools := []plugin.Tool{
 		{
 			Name:        "search_emails",
 			Description: "Search the user's Gmail. Supports Gmail query syntax (e.g. 'is:unread in:inbox newer_than:2d', 'from:priya'). Returns headers and snippets, not bodies.",
@@ -172,7 +182,11 @@ func (p *Plugin) Tools() []plugin.Tool {
 				if err != nil {
 					return nil, err
 				}
-				return map[string]string{"status": "draft_saved", "draft_id": id}, nil
+				out := map[string]any{"status": "draft_saved", "draft_id": id}
+				if n := p.noteFor(ctx); n != nil {
+					out["written_in_style_learned_from"] = n.Learned
+				}
+				return out, nil
 			},
 		},
 		{
@@ -181,7 +195,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 			Properties:  emailProps,
 			Required:    []string{"to", "body"},
 			Write:       true,
-			Propose: func(_ context.Context, raw json.RawMessage) (plugin.Proposal, error) {
+			Propose: func(ctx context.Context, raw json.RawMessage) (plugin.Proposal, error) {
 				in, err := plugin.Decode[provider.OutgoingEmail](raw)
 				if err != nil {
 					return plugin.Proposal{}, err
@@ -189,7 +203,8 @@ func (p *Plugin) Tools() []plugin.Tool {
 				if len(in.To) == 0 {
 					return plugin.Proposal{}, errors.New("at least one recipient is required")
 				}
-				return plugin.Proposal{Kind: KindSendEmail, Summary: summary("Email", in), Payload: in}, nil
+				pl := emailPayload{OutgoingEmail: in, Style: p.noteFor(ctx)}
+				return plugin.Proposal{Kind: KindSendEmail, Summary: summary("Email", in), Payload: pl}, nil
 			},
 		},
 		{
@@ -260,7 +275,10 @@ func (p *Plugin) Tools() []plugin.Tool {
 				return p.draftProposal(ctx, raw, KindDeleteDraft, "Delete draft")
 			},
 		},
+		p.styleTool(),
 	}
+	tools = append(tools, p.followUpTools()...)
+	return append(tools, p.sortingTools()...)
 }
 
 func (p *Plugin) draftProposal(ctx context.Context, raw json.RawMessage, kind, prefix string) (plugin.Proposal, error) {
@@ -325,19 +343,19 @@ func (p *Plugin) EditFields(kind string) map[string]any {
 }
 
 func (p *Plugin) Edit(_ context.Context, kind string, payload, raw json.RawMessage) (plugin.Proposal, error) {
-	var m provider.OutgoingEmail
-	if err := json.Unmarshal(payload, &m); err != nil {
+	var pl emailPayload
+	if err := json.Unmarshal(payload, &pl); err != nil {
 		return plugin.Proposal{}, err
 	}
 	ch, err := plugin.Decode[changes](raw)
 	if err != nil {
 		return plugin.Proposal{}, err
 	}
-	m = ch.apply(m)
-	if len(m.To) == 0 {
+	pl.OutgoingEmail = ch.apply(pl.OutgoingEmail)
+	if len(pl.To) == 0 {
 		return plugin.Proposal{}, errors.New("the email would have no recipients")
 	}
-	return plugin.Proposal{Kind: kind, Summary: summary("Email", m), Payload: m}, nil
+	return plugin.Proposal{Kind: kind, Summary: summary("Email", pl.OutgoingEmail), Payload: pl}, nil
 }
 
 // ---- Deduper ----

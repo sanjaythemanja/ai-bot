@@ -1,18 +1,23 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowUp,
-  CalendarSearch,
   ChevronDown,
+  Hourglass,
   Inbox,
-  NotebookText,
+  Mic,
   PenLine,
+  ShieldCheck,
+  Square,
 } from "lucide-react";
 import { api, type ToolCall } from "../api";
 import { greeting, longDate, stripStamp, toolLabel, toolOutcome } from "../lib/format";
+import { canDictate, speak, stopSpeaking, useDictation } from "../lib/speech";
+import { ActionCard } from "./ActionCard";
+import { StatusPill } from "./RightRail";
 import { Mark, Pill, Thinking } from "./ui";
 
 export type ChatMessage =
@@ -21,10 +26,10 @@ export type ChatMessage =
   | { role: "error"; text: string };
 
 const SUGGESTIONS = [
-  { icon: Inbox, text: "What needs my attention today?" },
-  { icon: CalendarSearch, text: "Find 30 minutes tomorrow afternoon for focus time" },
+  { icon: Inbox, text: "What needs my attention today, and why?" },
+  { icon: Hourglass, text: "Who hasn't replied to me, and what did I promise people?" },
+  { icon: ShieldCheck, text: "Keep Tuesday and Thursday 2–4pm free for focus" },
   { icon: PenLine, text: "Draft a reply to my most recent unread email" },
-  { icon: NotebookText, text: "What's on my calendar for the rest of the week?" },
 ];
 
 export function Chat({
@@ -34,6 +39,7 @@ export function Chat({
   aiReady,
   aiHint,
   requireApproval,
+  undoSeconds,
 }: {
   sessionId: string;
   messages: ChatMessage[];
@@ -41,6 +47,7 @@ export function Chat({
   aiReady: boolean;
   aiHint?: string;
   requireApproval: boolean;
+  undoSeconds: number;
 }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -54,15 +61,18 @@ export function Chat({
 
   useEffect(() => input.current?.focus(), [sessionId]);
 
-  async function send(text: string) {
+  // viaVoice: the message was spoken, so the reply is read aloud too.
+  async function send(text: string, viaVoice = false) {
     const msg = text.trim();
     if (!msg || busy) return;
+    stopSpeaking();
     setDraft("");
     setBusy(true);
     setMessages((m) => [...m, { role: "user", text: msg }]);
     try {
       const r = await api.chat(sessionId, msg);
       setMessages((m) => [...m, { role: "assistant", text: r.reply || "(no reply)", tools: r.tool_calls ?? [], warning: r.warning }]);
+      if (viaVoice && r.reply) speak(r.reply);
     } catch (e) {
       setMessages((m) => [...m, { role: "error", text: (e as Error).message }]);
     } finally {
@@ -83,7 +93,7 @@ export function Chat({
           ) : (
             <div className="space-y-7">
               {messages.map((m, i) => (
-                <Message key={i} m={m} />
+                <Message key={i} m={m} undoSeconds={undoSeconds} />
               ))}
               {busy && (
                 <div className="flex gap-3 rise">
@@ -101,6 +111,7 @@ export function Chat({
         value={draft}
         onChange={setDraft}
         onSend={() => send(draft)}
+        onVoiceSend={(t) => send(t, true)}
         disabled={busy || !aiReady}
         inputRef={input}
         requireApproval={requireApproval}
@@ -142,7 +153,7 @@ function Welcome({ onPick, disabled, hint }: { onPick: (t: string) => void; disa
   );
 }
 
-function Message({ m }: { m: ChatMessage }) {
+function Message({ m, undoSeconds }: { m: ChatMessage; undoSeconds: number }) {
   if (m.role === "user") {
     return (
       <div className="flex justify-end rise">
@@ -174,7 +185,46 @@ function Message({ m }: { m: ChatMessage }) {
         </div>
         {m.warning && <p className="mt-2 text-[13px] text-amber">{m.warning}</p>}
         {m.tools.length > 0 && <ToolTrail tools={m.tools} />}
+        <InlineApprovals ids={queuedIds(m.tools)} undoSeconds={undoSeconds} />
       </div>
+    </div>
+  );
+}
+
+// Action IDs this reply queued for approval.
+function queuedIds(tools: ToolCall[]): string[] {
+  const ids: string[] = [];
+  for (const t of tools) {
+    if (t.is_error || toolOutcome(t.output) !== "queued") continue;
+    try {
+      const id = (JSON.parse(t.output) as { action_id?: string }).action_id;
+      if (id) ids.push(id);
+    } catch {
+      /* not JSON */
+    }
+  }
+  return ids;
+}
+
+// On phones and tablets the approvals panel is a tap away, so approvals a
+// reply queued are shown right under it (the wide layout has the panel open).
+function InlineApprovals({ ids, undoSeconds }: { ids: string[]; undoSeconds: number }) {
+  const actions = useQuery({ queryKey: ["actions"], queryFn: api.actions, enabled: ids.length > 0 });
+  if (ids.length === 0) return null;
+  const mine = (actions.data ?? []).filter((a) => ids.includes(a.id));
+  if (mine.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-2.5 xl:hidden">
+      {mine.map((a) =>
+        a.status === "pending" ? (
+          <ActionCard key={a.id} a={a} undoSeconds={undoSeconds} />
+        ) : (
+          <div key={a.id} className="flex items-start gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-[13px] text-ink-2">
+            <StatusPill status={a.status} />
+            <span className="min-w-0 flex-1 line-clamp-2">{a.summary}</span>
+          </div>
+        ),
+      )}
     </div>
   );
 }
@@ -223,6 +273,7 @@ function Composer({
   value,
   onChange,
   onSend,
+  onVoiceSend,
   disabled,
   inputRef,
   requireApproval,
@@ -230,10 +281,31 @@ function Composer({
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
+  onVoiceSend: (text: string) => void;
   disabled: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   requireApproval: boolean;
 }) {
+  const voice = useDictation();
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
+  // Speak; a pause sends the message. Tapping stop keeps the text to edit.
+  const toggleMic = () => {
+    if (voice.listening) return voice.stop();
+    stopSpeaking();
+    setVoiceError(null);
+    const base = value.trim();
+    const join = (t: string) => (base ? `${base} ${t}` : t);
+    voice.start({
+      onText: (t) => onChange(join(t)),
+      onDone: (t, stoppedByUser) => {
+        if (t && !stoppedByUser) onVoiceSend(join(t));
+        else inputRef.current?.focus();
+      },
+      onError: setVoiceError,
+    });
+  };
+
   useLayoutEffect(() => {
     const el = inputRef.current;
     if (!el) return;
@@ -262,10 +334,25 @@ function Composer({
                 onSend();
               }
             }}
-            placeholder="Ask about your inbox or calendar…"
+            placeholder={voice.listening ? "Listening… pause when done" : "Ask about your day…"}
             aria-label="Message"
             className="max-h-[200px] min-h-[24px] flex-1 resize-none bg-transparent py-1.5 text-[15px] text-ink outline-none placeholder:text-ink-3"
           />
+          {canDictate && (
+            <button
+              type="button"
+              onClick={toggleMic}
+              disabled={disabled && !voice.listening}
+              aria-label={voice.listening ? "Stop listening" : "Speak your request"}
+              aria-pressed={voice.listening}
+              title={voice.listening ? "Stop listening" : "Speak your request"}
+              className={`inline-flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors disabled:opacity-50 ${
+                voice.listening ? "animate-pulse bg-danger-soft text-danger" : "text-ink-3 hover:bg-sunken hover:text-ink"
+              }`}
+            >
+              {voice.listening ? <Square size={15} fill="currentColor" /> : <Mic size={18} />}
+            </button>
+          )}
           <button
             type="submit"
             disabled={disabled || !value.trim()}
@@ -275,8 +362,9 @@ function Composer({
             <ArrowUp size={18} strokeWidth={2.2} />
           </button>
         </form>
+        {voiceError && <p className="mt-2 text-center text-[12px] text-danger">{voiceError}</p>}
         <p className="mt-2 text-center text-[12px] text-ink-3">
-          Enter to send · Shift + Enter for a new line ·{" "}
+          Enter to send{canDictate ? " · Tap the mic to speak" : " · Shift + Enter for a new line"} ·{" "}
           {requireApproval ? "Emails and invites wait for your approval" : "Approval is off: emails and invites go out right away"}
         </p>
       </div>

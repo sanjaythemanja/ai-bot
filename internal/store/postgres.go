@@ -270,6 +270,24 @@ func (p *Postgres) DeleteConnection(ctx context.Context, userID, provider string
 	return err
 }
 
+// ---------- settings ----------
+
+func (p *Postgres) GetSetting(ctx context.Context, userID, key string) ([]byte, error) {
+	var b []byte
+	err := p.pool.QueryRow(ctx, `SELECT value FROM user_settings WHERE user_id = $1 AND key = $2`, userID, key).Scan(&b)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return b, err
+}
+
+func (p *Postgres) PutSetting(ctx context.Context, userID, key string, value []byte) error {
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO user_settings (user_id, key, value) VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, userID, key, value)
+	return err
+}
+
 // ---------- actions ----------
 
 // PGActions is the Actions view of Postgres.
@@ -278,12 +296,12 @@ type PGActions struct{ *Postgres }
 // Actions returns the Actions view backed by the same pool.
 func (p *Postgres) Actions() PGActions { return PGActions{p} }
 
-const actionCols = `id, user_id, kind, summary, payload, status, result, error, created_at, updated_at`
+const actionCols = `id, user_id, kind, summary, reason, payload, status, result, error, created_at, updated_at`
 
 func scanAction(r pgx.Row) (Action, error) {
 	var a Action
 	var payload []byte
-	err := r.Scan(&a.ID, &a.UserID, &a.Kind, &a.Summary, &payload, &a.Status, &a.Result, &a.Error, &a.CreatedAt, &a.UpdatedAt)
+	err := r.Scan(&a.ID, &a.UserID, &a.Kind, &a.Summary, &a.Reason, &payload, &a.Status, &a.Result, &a.Error, &a.CreatedAt, &a.UpdatedAt)
 	a.Payload = payload
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrActionNotFound
@@ -291,14 +309,14 @@ func scanAction(r pgx.Row) (Action, error) {
 	return a, err
 }
 
-func (v PGActions) Add(ctx context.Context, userID, kind, summary string, payload any) (Action, error) {
+func (v PGActions) Add(ctx context.Context, userID, kind, summary, reason string, payload any) (Action, error) {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return Action{}, err
 	}
 	return scanAction(v.pool.QueryRow(ctx, `
-		INSERT INTO actions (id, user_id, kind, summary, payload, status) VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING `+actionCols, NewID(), userID, kind, summary, b, StatusPending))
+		INSERT INTO actions (id, user_id, kind, summary, reason, payload, status) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING `+actionCols, NewID(), userID, kind, summary, reason, b, StatusPending))
 }
 
 func (v PGActions) Get(ctx context.Context, userID, id string) (Action, error) {
@@ -362,5 +380,6 @@ var (
 	_ Store       = (*Postgres)(nil)
 	_ Users       = (*Postgres)(nil)
 	_ Connections = (*Postgres)(nil)
+	_ Settings    = (*Postgres)(nil)
 	_ Actions     = PGActions{}
 )

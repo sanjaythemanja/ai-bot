@@ -21,6 +21,7 @@ type Memory struct {
 	sessions map[string]memSession // key: hex of token hash
 	actions  map[string]*Action
 	conns    map[string]memConn // key: userID + "/" + provider
+	settings map[string][]byte  // key: userID + "/" + key
 }
 
 type memConn struct {
@@ -53,6 +54,7 @@ func NewMemory() *Memory {
 		sessions: map[string]memSession{},
 		actions:  map[string]*Action{},
 		conns:    map[string]memConn{},
+		settings: map[string][]byte{},
 	}
 }
 
@@ -228,13 +230,13 @@ func (m *Memory) action(userID, id string) (*Action, error) {
 	return a, nil
 }
 
-func (m *Memory) Add(_ context.Context, userID, kind, summary string, payload any) (Action, error) {
+func (m *Memory) Add(_ context.Context, userID, kind, summary, reason string, payload any) (Action, error) {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return Action{}, err
 	}
 	now := time.Now()
-	a := &Action{ID: NewID(), UserID: userID, Kind: kind, Summary: summary, Payload: b, Status: StatusPending, CreatedAt: now, UpdatedAt: now}
+	a := &Action{ID: NewID(), UserID: userID, Kind: kind, Summary: summary, Reason: reason, Payload: b, Status: StatusPending, CreatedAt: now, UpdatedAt: now}
 	m.mu.Lock()
 	m.actions[a.ID] = a
 	m.mu.Unlock()
@@ -352,6 +354,24 @@ func (m *Memory) DeleteConnection(_ context.Context, userID, provider string) er
 	return nil
 }
 
+// ---------- settings ----------
+
+func (m *Memory) GetSetting(_ context.Context, userID, key string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if v, ok := m.settings[userID+"/"+key]; ok {
+		return append([]byte(nil), v...), nil
+	}
+	return nil, nil
+}
+
+func (m *Memory) PutSetting(_ context.Context, userID, key string, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.settings[userID+"/"+key] = append([]byte(nil), value...)
+	return nil
+}
+
 // ActionsView adapts Memory to the Actions interface (Memory's own Get and
 // List are the conversation methods).
 type ActionsView struct{ *Memory }
@@ -368,5 +388,6 @@ var (
 	_ Store       = (*Memory)(nil)
 	_ Users       = (*Memory)(nil)
 	_ Connections = (*Memory)(nil)
+	_ Settings    = (*Memory)(nil)
 	_ Actions     = ActionsView{}
 )

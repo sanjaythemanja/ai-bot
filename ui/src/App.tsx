@@ -7,6 +7,7 @@ import { Mark } from "./components/ui";
 import { Chat, type ChatMessage } from "./components/Chat";
 import { RightRail } from "./components/RightRail";
 import { Sidebar } from "./components/Sidebar";
+import { Activity } from "./components/Activity";
 import { IconButton } from "./components/ui";
 
 const newId = () => crypto.randomUUID();
@@ -89,6 +90,9 @@ function Workspace({ me }: { me: Me }) {
   const flash = useFlash();
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, refetchInterval: 60_000 });
   const convs = useQuery({ queryKey: ["conversations"], queryFn: api.conversations });
+  const actions = useQuery({ queryKey: ["actions"], queryFn: api.actions, refetchInterval: 30_000 });
+  const pendingCount = (actions.data ?? []).filter((a) => a.status === "pending").length;
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const [sessionId, setSessionId] = useState(readSession);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -133,6 +137,12 @@ function Workspace({ me }: { me: Me }) {
   }, [convs.data, restored, sessionId, open]);
 
   const s = status.data;
+  const undoSeconds = s?.undo_seconds ?? 0;
+  const openActivity = () => {
+    setNavOpen(false);
+    setRailOpen(false);
+    setActivityOpen(true);
+  };
   const title = convs.data?.find((c) => c.id === sessionId)?.title ?? (messages.length ? messages[0].text.slice(0, 60) : "New conversation");
   const aiHint = s && !s.ai_configured
     ? s.ai_error ?? "No AI model is configured. Set LLM_API_KEY and LLM_MODEL in .env, then restart the server."
@@ -142,11 +152,11 @@ function Workspace({ me }: { me: Me }) {
     <div className="flex h-full overflow-hidden">
       {/* Sidebar: fixed on large screens, a drawer below that. */}
       <div className="hidden lg:flex">
-        <Sidebar activeId={sessionId} onOpen={open} onNew={startNew} status={s} me={me} />
+        <Sidebar activeId={sessionId} onOpen={open} onNew={startNew} status={s} me={me} onOpenActivity={openActivity} />
       </div>
       {navOpen && (
         <Drawer side="left" onClose={() => setNavOpen(false)}>
-          <Sidebar activeId={sessionId} onOpen={open} onNew={startNew} status={s} me={me} onClose={() => setNavOpen(false)} />
+          <Sidebar activeId={sessionId} onOpen={open} onNew={startNew} status={s} me={me} onOpenActivity={openActivity} onClose={() => setNavOpen(false)} />
         </Drawer>
       )}
 
@@ -169,8 +179,17 @@ function Workspace({ me }: { me: Me }) {
           {s?.demo_mode && (
             <span className="rounded-full bg-clay-soft px-2.5 py-1 text-[12px] font-medium text-clay">Demo data</span>
           )}
-          <IconButton label="Open today panel" onClick={() => setRailOpen(true)} className="xl:hidden">
+          <IconButton
+            label={pendingCount ? `Open today panel (${pendingCount} waiting for approval)` : "Open today panel"}
+            onClick={() => setRailOpen(true)}
+            className="relative xl:hidden"
+          >
             <CalendarDays size={18} />
+            {pendingCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 inline-flex min-w-[17px] items-center justify-center rounded-full bg-amber px-1 text-[10.5px] leading-[17px] font-semibold text-paper">
+                {pendingCount}
+              </span>
+            )}
           </IconButton>
         </header>
 
@@ -182,17 +201,24 @@ function Workspace({ me }: { me: Me }) {
           aiReady={!!s?.ai_configured}
           aiHint={aiHint}
           requireApproval={s?.require_approval ?? true}
+          undoSeconds={undoSeconds}
         />
       </main>
 
       <div className="hidden xl:flex">
-        <RightRail requireApproval={s?.require_approval ?? true} />
+        <RightRail requireApproval={s?.require_approval ?? true} undoSeconds={undoSeconds} onOpenActivity={openActivity} />
       </div>
       {railOpen && (
         <Drawer side="right" onClose={() => setRailOpen(false)}>
-          <RightRail requireApproval={s?.require_approval ?? true} onClose={() => setRailOpen(false)} />
+          <RightRail
+            requireApproval={s?.require_approval ?? true}
+            undoSeconds={undoSeconds}
+            onOpenActivity={openActivity}
+            onClose={() => setRailOpen(false)}
+          />
         </Drawer>
       )}
+      {activityOpen && <Activity onClose={() => setActivityOpen(false)} />}
     </div>
   );
 }

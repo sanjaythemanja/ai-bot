@@ -70,6 +70,23 @@ func (g *Gmail) GetMessage(ctx context.Context, id string) (provider.Email, erro
 	return toEmail(m, true), nil
 }
 
+func (g *Gmail) Thread(ctx context.Context, threadID string) ([]provider.Email, error) {
+	s, err := g.svc(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t, err := s.Users.Threads.Get("me", threadID).Format("metadata").
+		MetadataHeaders("From", "To", "Subject", "Date").Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("gmail thread %s: %w", threadID, err)
+	}
+	out := make([]provider.Email, 0, len(t.Messages))
+	for _, m := range t.Messages {
+		out = append(out, toEmail(m, false))
+	}
+	return out, nil
+}
+
 func (g *Gmail) CreateDraft(ctx context.Context, msg provider.OutgoingEmail) (string, error) {
 	s, err := g.svc(ctx)
 	if err != nil {
@@ -287,8 +304,11 @@ func toEmail(m *gmail.Message, withBody bool) provider.Email {
 		e.Date = d
 	}
 	for _, l := range m.LabelIds {
-		if l == "UNREAD" {
+		switch l {
+		case "UNREAD":
 			e.Unread = true
+		case "SENT":
+			e.Sent = true
 		}
 	}
 	if withBody && m.Payload != nil {

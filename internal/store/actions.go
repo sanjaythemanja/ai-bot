@@ -23,10 +23,12 @@ var (
 // Action is a write the assistant proposed (send an email, change an event).
 // Nothing outward-facing runs until it is approved.
 type Action struct {
-	ID        string          `json:"id"`
-	UserID    string          `json:"-"`
-	Kind      string          `json:"kind"`
-	Summary   string          `json:"summary"`
+	ID      string `json:"id"`
+	UserID  string `json:"-"`
+	Kind    string `json:"kind"`
+	Summary string `json:"summary"`
+	// Reason is why it was proposed: the user's request that led to it.
+	Reason    string          `json:"reason,omitempty"`
 	Payload   json.RawMessage `json:"payload"`
 	Status    string          `json:"status"`
 	Result    string          `json:"result,omitempty"`
@@ -38,7 +40,7 @@ type Action struct {
 // Actions stores each user's actions. Every method is scoped to userID, so
 // one user can never see or resolve another's actions.
 type Actions interface {
-	Add(ctx context.Context, userID, kind, summary string, payload any) (Action, error)
+	Add(ctx context.Context, userID, kind, summary, reason string, payload any) (Action, error)
 	Get(ctx context.Context, userID, id string) (Action, error)
 	List(ctx context.Context, userID string, limit int) ([]Action, error)
 	// Claim moves a pending action to status exactly once; a second caller

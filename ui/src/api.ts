@@ -15,6 +15,7 @@ export type Status = {
   calendar: boolean;
   timezone: string;
   require_approval: boolean;
+  undo_seconds: number;
   storage: "postgres" | "memory" | string;
 };
 
@@ -42,9 +43,12 @@ export type CalEvent = {
   meet_link?: string;
 };
 
+export type Verdict = { priority: "important" | "normal" | "low"; reasons: string[] };
+
 export type Overview = {
   emails: Email[] | null;
   events: CalEvent[] | null;
+  priority?: Record<string, Verdict>;
   errors?: Record<string, string>;
 };
 
@@ -54,6 +58,7 @@ export type Action = {
   id: string;
   kind: string;
   summary: string;
+  reason?: string;
   payload: Record<string, unknown>;
   status: ActionStatus;
   result?: string;
@@ -131,6 +136,11 @@ export const api = {
   actions: () => request<{ actions: Action[] | null }>("/api/actions").then((r) => r.actions ?? []),
   approve: (id: string) => post<{ action: Action }>(`/api/actions/${encodeURIComponent(id)}/approve`),
   reject: (id: string) => post<{ action: Action }>(`/api/actions/${encodeURIComponent(id)}/reject`),
+  callTool: (name: string, input: unknown) =>
+    post<{ result?: unknown; error?: string }>(`/api/tools/${encodeURIComponent(name)}`, input).then((r) => {
+      if (r.error) throw new ApiError(400, r.error);
+      return r.result;
+    }),
   chat: (sessionId: string, message: string) => post<ChatReply>("/api/chat", { session_id: sessionId, message }),
   briefing: () => post<Briefing>("/api/briefing"),
   conversations: () =>

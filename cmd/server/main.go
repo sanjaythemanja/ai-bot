@@ -53,6 +53,7 @@ func main() {
 		convs     store.Store       = store.NewMemory()
 		users     store.Users       = convs.(*store.Memory)
 		conns     store.Connections = convs.(*store.Memory)
+		prefs     store.Settings    = convs.(*store.Memory)
 		actions   store.Actions     = store.ActionsView{Memory: convs.(*store.Memory)}
 		storeKind                   = "memory"
 	)
@@ -64,7 +65,7 @@ func main() {
 			_ = level.Error(logger).Log("msg", "database", "err", err)
 			os.Exit(1)
 		}
-		convs, users, conns, actions, storeKind = pg, pg, pg, pg.Actions(), "postgres"
+		convs, users, conns, prefs, actions, storeKind = pg, pg, pg, pg, pg.Actions(), "postgres"
 	} else {
 		_ = level.Warn(logger).Log("msg", "DATABASE_URL not set: users, chats and actions are kept in memory and lost on restart")
 	}
@@ -129,9 +130,10 @@ func main() {
 
 	// --- Service + go-kit middleware stack ---
 	// Integrations are plugins: add one here and nothing else in the core changes.
+	settings := assistant.UserSettings{Store: prefs}
 	plugins := []plugin.Plugin{
-		gmailplugin.New(mail),
-		calendarplugin.New(cal, cfg.Location),
+		gmailplugin.New(mail, settings),
+		calendarplugin.New(cal, cfg.Location, settings),
 		meetplugin.New(meet, cal, cfg.Location),
 	}
 	if chat != nil {
@@ -147,7 +149,7 @@ func main() {
 		Location: cfg.Location, DemoMode: cfg.DemoMode,
 		AIConfigured: model != nil, AIProvider: cfg.LLM.Provider, Model: cfg.LLM.Model, AIError: aiErr,
 		GoogleConfigured: gauth.Configured(),
-		Store:            convs, StoreKind: storeKind,
+		Store:            convs, StoreKind: storeKind, UndoSeconds: cfg.UndoSeconds,
 	})
 	svc = assistant.LoggingMiddleware(log.With(logger, "component", "service"))(svc)
 	svc = assistant.InstrumentingMiddleware(

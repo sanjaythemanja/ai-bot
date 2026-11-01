@@ -28,6 +28,14 @@ For a different OpenAI-compatible service, also set `LLM_BASE_URL`. For Claude, 
 - **Edit anything by chat**: change a meeting's title, time, location, description or attendees, or cancel it. Add people to a meeting and Google sends them the invite. Edit drafts (to, cc, bcc, subject, body), send or delete them, and add BCC to any email. Change something already waiting in Pending actions ("add Priya in CC on that email") without starting over.
 - **Today panel**: a raw snapshot of unread mail and today's events. No AI involved.
 - **Approval queue**: by default `send_email` and `create_event` are only *queued*, and nothing leaves your account until you click **Approve**. You can turn this off in `config.yaml`. `draft_email` saves a draft directly, since a draft sends nothing.
+- **Undo window**: after you approve, the action waits `undo_seconds` (default 30, in `config.yaml`) with an **Undo** button before it runs. Closing the tab during the countdown leaves the action waiting rather than sending it.
+- **Activity log**: every action is listed with what it did, how it ended, and why it exists (the request that led to it).
+- **Follow-ups**: "who hasn't replied to me?" finds sent threads with no answer, and "what did I promise?" finds commitments ("I'll send it by Friday") in sent mail and, if Slack is connected, in Slack. The daily brief includes both.
+- **Protected time**: "keep Tue/Thu 2–4pm for focus" or "never book before 10am" are saved as rules. Slot search skips them, and any booking that breaks a rule or clashes with a meeting shows a ⚠ warning on the approval card.
+- **Explained sorting**: unread mail is marked important, normal or low, with the reason for each. Corrections ("Acme is always important", or the ⋯ menu on an email) are saved as rules that always win.
+- **Writes like you**: before drafting, the assistant learns your greetings, sign-offs and length from your recent sent mail. Email approvals show which emails it learned from.
+- **Voice**: tap the mic to speak a request; pausing sends it, and the reply is read aloud. This uses the browser's built-in speech recognition, so it works in Chrome, Edge and Safari but not Firefox.
+- **Phone-friendly approvals**: a badge shows how many actions are waiting, and approval cards appear right under the reply in chat.
 
 ## Plugins
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,7 +122,7 @@ func TestPostgresUsersSessionsActions(t *testing.T) {
 
 	// Actions: claim once, scoped to owner.
 	acts := pg.Actions()
-	a, err := acts.Add(ctx, u.ID, "send_email", "Email x", map[string]any{"to": []string{"x@example.com"}})
+	a, err := acts.Add(ctx, u.ID, "send_email", "Email x", "test", map[string]any{"to": []string{"x@example.com"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,5 +168,33 @@ func TestPostgresConnections(t *testing.T) {
 	_ = pg.DeleteConnection(ctx, u.ID, "slack")
 	if _, err := pg.ConnectionSecret(ctx, u.ID, "slack"); !errors.Is(err, ErrNotConnected) {
 		t.Fatal("connection not deleted")
+	}
+}
+
+func TestPostgresSettingsAndActionReason(t *testing.T) {
+	pg := openTestPG(t)
+	ctx := context.Background()
+	suffix := time.Now().Format("150405.000000")
+	u, _ := pg.UpsertUser(ctx, "test-s-"+suffix, "s-"+suffix+"@example.com", "S")
+	other, _ := pg.UpsertUser(ctx, "test-s2-"+suffix, "s2-"+suffix+"@example.com", "S2")
+	t.Cleanup(func() {
+		_, _ = pg.pool.Exec(context.Background(), `DELETE FROM users WHERE id = ANY($1)`, []string{u.ID, other.ID})
+	})
+
+	if b, err := pg.GetSetting(ctx, u.ID, "calendar.time_rules"); err != nil || b != nil {
+		t.Fatalf("unset setting: %s %v", b, err)
+	}
+	_ = pg.PutSetting(ctx, u.ID, "calendar.time_rules", []byte(`{"work_start":"09:00"}`))
+	_ = pg.PutSetting(ctx, u.ID, "calendar.time_rules", []byte(`{"work_start":"10:00"}`))
+	if b, _ := pg.GetSetting(ctx, u.ID, "calendar.time_rules"); !strings.Contains(string(b), "10:00") {
+		t.Fatalf("setting not replaced: %s", b)
+	}
+	if b, _ := pg.GetSetting(ctx, other.ID, "calendar.time_rules"); b != nil {
+		t.Fatal("settings leaked to another user")
+	}
+
+	a, err := pg.Actions().Add(ctx, u.ID, "send_email", "Email x", "Nudge Acme", map[string]any{"to": []string{"x@example.com"}})
+	if err != nil || a.Reason != "Nudge Acme" {
+		t.Fatalf("reason not stored: %+v %v", a, err)
 	}
 }
