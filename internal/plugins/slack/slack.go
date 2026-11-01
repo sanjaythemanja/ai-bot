@@ -4,6 +4,7 @@
 package slack
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -52,7 +53,7 @@ var editProps = map[string]any{
 }
 
 func summary(m Post) string {
-	where := "#" + strings.TrimPrefix(plugin.FirstNonEmpty(m.ChannelName, m.Channel), "#")
+	where := "#" + strings.TrimPrefix(cmp.Or(m.ChannelName, m.Channel), "#")
 	if strings.HasPrefix(m.ChannelName, "dm:") {
 		where = "DM " + strings.TrimPrefix(m.ChannelName, "dm:")
 	}
@@ -138,7 +139,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 				out := []promise{}
 				for _, m := range msgs {
 					if ps := plugin.Promises(m.Text, 3); len(ps) > 0 {
-						out = append(out, promise{Channel: plugin.FirstNonEmpty(m.ChannelName, m.Channel), Time: m.Time.Format(time.RFC3339), Promises: ps, Text: m.Text, Permalink: m.Permalink})
+						out = append(out, promise{Channel: cmp.Or(m.ChannelName, m.Channel), Time: m.Time.Format(time.RFC3339), Promises: ps, Text: m.Text, Permalink: m.Permalink})
 					}
 				}
 				return out, nil

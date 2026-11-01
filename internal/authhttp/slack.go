@@ -1,6 +1,7 @@
 package authhttp
 
 import (
+	"cmp"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -178,16 +179,7 @@ func (s SlackOAuth) exchange(r *http.Request, code string) (token, team string, 
 		return "", "", err
 	}
 	if !out.OK || out.AuthedUser.AccessToken == "" {
-		return "", "", fmt.Errorf("slack oauth: %s", firstNonEmpty(out.Error, "no user token returned"))
+		return "", "", fmt.Errorf("slack oauth: %s", cmp.Or(out.Error, "no user token returned"))
 	}
 	return out.AuthedUser.AccessToken, out.Team.Name, nil
-}
-
-func firstNonEmpty(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }

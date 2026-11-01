@@ -36,6 +36,9 @@ For a different OpenAI-compatible service, also set `LLM_BASE_URL`. For Claude, 
 - **Writes like you**: before drafting, the assistant learns your greetings, sign-offs and length from your recent sent mail. Email approvals show which emails it learned from.
 - **Voice**: tap the mic to speak a request; pausing sends it, and the reply is read aloud. This uses the browser's built-in speech recognition, so it works in Chrome, Edge and Safari but not Firefox.
 - **Phone-friendly approvals**: a badge shows how many actions are waiting, and approval cards appear right under the reply in chat.
+- **Live progress, in the background**: each message runs as a background job. The chat shows every step as it happens ("Read transcript: 3 of 5"), with a Stop button. You can close or reload the tab; it keeps running and the conversation picks it back up. A job interrupted by a server restart is marked so you can resend it.
+- **Parallel tools**: when the model asks for several lookups at once (five transcripts, five emails), they run concurrently, at most 4 at a time, each with its own 90-second limit. Results go back in the original order. Tools that change something (sending, drafts, saved rules) still run one at a time, so duplicate checks stay reliable.
+- **Big results condensed**: a tool result over 12,000 characters (a long transcript or email) is summarised for your question by its own model call, in parallel with the others, before the main model sees it. Short results pass through untouched.
 
 ## Plugins
 
@@ -180,8 +183,14 @@ web/dist/                     built UI, embedded into the binary (go:embed)
 
 | Method | Path | |
 |---|---|---|
-| POST | `/api/chat` | `{session_id, message}` → `{reply, tool_calls}` |
-| POST | `/api/chat/reset` | clear a conversation |
+| POST | `/api/chat` | `{session_id, message}` → `{reply, tool_calls}` (waits for the whole answer) |
+| POST | `/api/chat/start` | same body → `{job}` at once; the turn runs in the background |
+| GET | `/api/jobs/{id}` | a job's status, steps and, when done, its reply |
+| GET | `/api/jobs/{id}/events` | Server-Sent Events: a job snapshot on every step until it ends |
+| POST | `/api/jobs/{id}/cancel` | stop a running job |
+| GET | `/api/conversations` · `/api/conversations/{id}` | conversation list, one transcript |
+| GET | `/api/conversations/{id}/job` | the conversation's latest job (to resume after a reload) |
+| POST | `/api/conversations/{id}/delete` | delete a conversation |
 | POST | `/api/briefing` | generate the daily brief |
 | GET | `/api/overview` | unread mail, today's events |
 | GET | `/api/actions` | approval queue |

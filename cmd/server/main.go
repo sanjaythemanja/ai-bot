@@ -54,6 +54,7 @@ func main() {
 		users     store.Users       = convs.(*store.Memory)
 		conns     store.Connections = convs.(*store.Memory)
 		prefs     store.Settings    = convs.(*store.Memory)
+		jobStore  store.Jobs        = convs.(*store.Memory)
 		actions   store.Actions     = store.ActionsView{Memory: convs.(*store.Memory)}
 		storeKind                   = "memory"
 	)
@@ -65,7 +66,7 @@ func main() {
 			_ = level.Error(logger).Log("msg", "database", "err", err)
 			os.Exit(1)
 		}
-		convs, users, conns, prefs, actions, storeKind = pg, pg, pg, pg, pg.Actions(), "postgres"
+		convs, users, conns, prefs, jobStore, actions, storeKind = pg, pg, pg, pg, pg, pg.Actions(), "postgres"
 	} else {
 		_ = level.Warn(logger).Log("msg", "DATABASE_URL not set: users, chats and actions are kept in memory and lost on restart")
 	}
@@ -143,13 +144,18 @@ func main() {
 	agent := assistant.NewAgent(model, tools, cfg.Location, log.With(logger, "component", "agent"))
 	agent.LogInputs = cfg.LogToolInputs
 
+	// Chat turns can run in the background; jobs left running by a previous
+	// process are marked interrupted.
+	jobs := assistant.NewJobs(jobStore, log.With(logger, "component", "jobs"))
+	jobs.Recover(context.Background())
+
 	fields := []string{"method"}
 	var svc assistant.Service = assistant.NewService(assistant.Config{
 		Mail: mail, Calendar: cal, Agent: agent, Tools: tools, Actions: actions,
 		Location: cfg.Location, DemoMode: cfg.DemoMode,
 		AIConfigured: model != nil, AIProvider: cfg.LLM.Provider, Model: cfg.LLM.Model, AIError: aiErr,
 		GoogleConfigured: gauth.Configured(),
-		Store:            convs, StoreKind: storeKind, UndoSeconds: cfg.UndoSeconds,
+		Store:            convs, StoreKind: storeKind, UndoSeconds: cfg.UndoSeconds, Jobs: jobs,
 	})
 	svc = assistant.LoggingMiddleware(log.With(logger, "component", "service"))(svc)
 	svc = assistant.InstrumentingMiddleware(
@@ -164,6 +170,7 @@ func main() {
 	// --- HTTP ---
 	mux := http.NewServeMux()
 	assistant.RegisterHTTPRoutes(mux, endpoints, log.With(logger, "component", "http"))
+	assistant.RegisterJobStream(mux, jobs)
 	demoSlack := ""
 	if cfg.DemoMode {
 		demoSlack = "Demo workspace"
@@ -178,7 +185,7 @@ func main() {
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: httpx.SecurityHeaders(sessions.Secure, jsonOnlyPOST(sessions.Require(
-			httpx.NewRateLimiter(cfg.ChatPerMinute, "/api/chat", "/api/briefing").Wrap(mux)))),
+			httpx.NewRateLimiter(cfg.ChatPerMinute, "/api/chat", "/api/chat/start", "/api/briefing").Wrap(mux)))),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      6 * time.Minute, // agent runs can take a while
 	}

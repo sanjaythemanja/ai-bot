@@ -92,13 +92,3 @@ func Norm(s string) string {
 	s = strings.ReplaceAll(strings.ToLower(s), `\n`, " ")
 	return strings.Join(strings.Fields(s), " ")
 }
-
-// FirstNonEmpty returns the first non-empty string.
-func FirstNonEmpty(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
-}

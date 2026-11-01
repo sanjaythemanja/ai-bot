@@ -170,6 +170,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 		},
 		{
 			Name:        "draft_email",
+			Mutates:     true,
 			Description: "Save an email as a Gmail draft. Safe: nothing is sent. Prefer this when the user wants to review wording themselves.",
 			Properties:  emailProps,
 			Required:    []string{"to", "body"},
@@ -233,6 +234,7 @@ func (p *Plugin) Tools() []plugin.Tool {
 		},
 		{
 			Name:        "update_draft",
+			Mutates:     true,
 			Description: "Edit a Gmail draft: recipients, CC, BCC, subject or body. Only the fields you pass change. Safe: nothing is sent.",
 			Properties:  plugin.Props(draftID, changeProps),
 			Required:    []string{"draft_id"},

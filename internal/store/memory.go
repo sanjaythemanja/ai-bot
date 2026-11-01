@@ -22,6 +22,7 @@ type Memory struct {
 	actions  map[string]*Action
 	conns    map[string]memConn // key: userID + "/" + provider
 	settings map[string][]byte  // key: userID + "/" + key
+	jobs     map[string]Job
 }
 
 type memConn struct {
@@ -55,6 +56,7 @@ func NewMemory() *Memory {
 		actions:  map[string]*Action{},
 		conns:    map[string]memConn{},
 		settings: map[string][]byte{},
+		jobs:     map[string]Job{},
 	}
 }
 
@@ -372,6 +374,64 @@ func (m *Memory) PutSetting(_ context.Context, userID, key string, value []byte)
 	return nil
 }
 
+// ---------- jobs ----------
+
+func (m *Memory) SaveJob(_ context.Context, j Job) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if old, ok := m.jobs[j.ID]; ok {
+		if old.UserID != j.UserID {
+			return ErrJobNotFound
+		}
+		j.CreatedAt = old.CreatedAt
+	} else if j.CreatedAt.IsZero() {
+		j.CreatedAt = time.Now()
+	}
+	j.UpdatedAt = time.Now()
+	j.Data = append(json.RawMessage(nil), j.Data...)
+	m.jobs[j.ID] = j
+	return nil
+}
+
+func (m *Memory) GetJob(_ context.Context, userID, id string) (Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[id]
+	if !ok || j.UserID != userID {
+		return Job{}, ErrJobNotFound
+	}
+	return j, nil
+}
+
+func (m *Memory) LatestJob(_ context.Context, userID, conversationID string) (Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best Job
+	for _, j := range m.jobs {
+		if j.UserID == userID && j.ConversationID == conversationID && (best.ID == "" || j.CreatedAt.After(best.CreatedAt)) {
+			best = j
+		}
+	}
+	if best.ID == "" {
+		return Job{}, ErrJobNotFound
+	}
+	return best, nil
+}
+
+func (m *Memory) InterruptRunning(context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for id, j := range m.jobs {
+		if j.Status == JobRunning {
+			j.Status = JobInterrupted
+			m.jobs[id] = j
+			n++
+		}
+	}
+	return n, nil
+}
+
 // ActionsView adapts Memory to the Actions interface (Memory's own Get and
 // List are the conversation methods).
 type ActionsView struct{ *Memory }
@@ -389,5 +449,6 @@ var (
 	_ Users       = (*Memory)(nil)
 	_ Connections = (*Memory)(nil)
 	_ Settings    = (*Memory)(nil)
+	_ Jobs        = (*Memory)(nil)
 	_ Actions     = ActionsView{}
 )

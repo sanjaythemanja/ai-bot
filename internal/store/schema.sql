@@ -85,3 +85,16 @@ CREATE TABLE IF NOT EXISTS connections (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, provider)
 );
+
+-- Background chat runs: status plus a JSON snapshot of their progress, so a
+-- reload can resume watching and a restart can mark them interrupted.
+CREATE TABLE IF NOT EXISTS jobs (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    conversation_id TEXT        NOT NULL,
+    status          TEXT        NOT NULL,
+    data            JSONB       NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS jobs_conversation_idx ON jobs (user_id, conversation_id, created_at DESC);

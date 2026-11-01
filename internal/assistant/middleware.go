@@ -34,6 +34,28 @@ func (mw *loggingMiddleware) Chat(ctx context.Context, sessionID, message string
 	return mw.next.Chat(ctx, sessionID, message)
 }
 
+func (mw *loggingMiddleware) StartChat(ctx context.Context, sessionID, message string) (j Job, err error) {
+	defer func(b time.Time) { mw.log("StartChat", b, err, "session", sessionID, "job", j.ID) }(time.Now())
+	return mw.next.StartChat(ctx, sessionID, message)
+}
+
+func (mw *loggingMiddleware) GetJob(ctx context.Context, id string) (j Job, err error) {
+	defer func(b time.Time) { mw.log("GetJob", b, err, "job", id, "status", j.Status) }(time.Now())
+	return mw.next.GetJob(ctx, id)
+}
+
+func (mw *loggingMiddleware) CancelJob(ctx context.Context, id string) (j Job, err error) {
+	defer func(b time.Time) { mw.log("CancelJob", b, err, "job", id) }(time.Now())
+	return mw.next.CancelJob(ctx, id)
+}
+
+func (mw *loggingMiddleware) ConversationJob(ctx context.Context, conversationID string) (j *Job, err error) {
+	defer func(b time.Time) {
+		mw.log("ConversationJob", b, err, "conversation", conversationID, "found", j != nil)
+	}(time.Now())
+	return mw.next.ConversationJob(ctx, conversationID)
+}
+
 func (mw *loggingMiddleware) ListConversations(ctx context.Context) (c []store.Summary, err error) {
 	defer func(b time.Time) { mw.log("ListConversations", b, err, "count", len(c)) }(time.Now())
 	return mw.next.ListConversations(ctx)
@@ -114,6 +136,26 @@ func (mw *instrumentingMiddleware) observe(method string, begin time.Time, err e
 func (mw *instrumentingMiddleware) Chat(ctx context.Context, sessionID, message string) (r ChatReply, err error) {
 	defer func(b time.Time) { mw.observe("Chat", b, err) }(time.Now())
 	return mw.next.Chat(ctx, sessionID, message)
+}
+
+func (mw *instrumentingMiddleware) StartChat(ctx context.Context, sessionID, message string) (j Job, err error) {
+	defer func(b time.Time) { mw.observe("StartChat", b, err) }(time.Now())
+	return mw.next.StartChat(ctx, sessionID, message)
+}
+
+func (mw *instrumentingMiddleware) GetJob(ctx context.Context, id string) (j Job, err error) {
+	defer func(b time.Time) { mw.observe("GetJob", b, err) }(time.Now())
+	return mw.next.GetJob(ctx, id)
+}
+
+func (mw *instrumentingMiddleware) CancelJob(ctx context.Context, id string) (j Job, err error) {
+	defer func(b time.Time) { mw.observe("CancelJob", b, err) }(time.Now())
+	return mw.next.CancelJob(ctx, id)
+}
+
+func (mw *instrumentingMiddleware) ConversationJob(ctx context.Context, conversationID string) (j *Job, err error) {
+	defer func(b time.Time) { mw.observe("ConversationJob", b, err) }(time.Now())
+	return mw.next.ConversationJob(ctx, conversationID)
 }
 
 func (mw *instrumentingMiddleware) ListConversations(ctx context.Context) (c []store.Summary, err error) {

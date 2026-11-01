@@ -21,6 +21,13 @@ import (
 // Service is the executive assistant's API.
 type Service interface {
 	Chat(ctx context.Context, sessionID, message string) (ChatReply, error)
+	// StartChat runs a chat turn in the background and returns at once;
+	// watch it with GetJob or the job event stream.
+	StartChat(ctx context.Context, sessionID, message string) (Job, error)
+	GetJob(ctx context.Context, id string) (Job, error)
+	CancelJob(ctx context.Context, id string) (Job, error)
+	// ConversationJob returns the newest job of a conversation, or nil.
+	ConversationJob(ctx context.Context, conversationID string) (*Job, error)
 	ListConversations(ctx context.Context) ([]store.Summary, error)
 	GetConversation(ctx context.Context, id string) (store.Conversation, error)
 	DeleteConversation(ctx context.Context, id string) error
@@ -111,6 +118,7 @@ type Config struct {
 	GoogleConfigured bool
 	Store            store.Store // conversation history; nil means in-memory
 	StoreKind        string      // "postgres" or "memory", for /api/status
+	Jobs             *Jobs       // background runs; nil = in-memory store
 	UndoSeconds      int         // undo window the UI waits before approving
 }
 
@@ -126,7 +134,12 @@ func NewService(cfg Config) Service {
 	if cfg.Store == nil {
 		cfg.Store, cfg.StoreKind = store.NewMemory(), "memory"
 	}
-	return &service{cfg: cfg, locks: map[string]*sync.Mutex{}}
+	if cfg.Jobs == nil {
+		cfg.Jobs = NewJobs(store.NewMemory(), nil)
+	}
+	s := &service{cfg: cfg, locks: map[string]*sync.Mutex{}}
+	cfg.Jobs.run = s.runChat
+	return s
 }
 
 func (s *service) lock(id string) *sync.Mutex {
@@ -150,20 +163,70 @@ func (s *service) aiReady() error {
 	return llm.ErrNotConfigured
 }
 
-func (s *service) Chat(ctx context.Context, sessionID, message string) (ChatReply, error) {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		return ChatReply{}, ErrEmptyMessage
+// prepare validates a chat message and resolves the user and conversation.
+func (s *service) prepare(ctx context.Context, sessionID, message string) (uid, sid, msg string, err error) {
+	msg = strings.TrimSpace(message)
+	if msg == "" {
+		return "", "", "", ErrEmptyMessage
 	}
 	if err := s.aiReady(); err != nil {
-		return ChatReply{}, err
+		return "", "", "", err
 	}
-	uid, err := userID(ctx)
+	if uid, err = userID(ctx); err != nil {
+		return "", "", "", err
+	}
+	if sid = sessionID; sid == "" {
+		sid = "default-" + uid
+	}
+	return uid, sid, msg, nil
+}
+
+func (s *service) Chat(ctx context.Context, sessionID, message string) (ChatReply, error) {
+	_, sid, msg, err := s.prepare(ctx, sessionID, message)
 	if err != nil {
 		return ChatReply{}, err
 	}
-	if sessionID == "" {
-		sessionID = "default-" + uid
+	return s.runChat(ctx, sid, msg, nil)
+}
+
+func (s *service) StartChat(ctx context.Context, sessionID, message string) (Job, error) {
+	uid, sid, msg, err := s.prepare(ctx, sessionID, message)
+	if err != nil {
+		return Job{}, err
+	}
+	return s.cfg.Jobs.start(ctx, uid, sid, msg)
+}
+
+func (s *service) GetJob(ctx context.Context, id string) (Job, error) {
+	uid, err := userID(ctx)
+	if err != nil {
+		return Job{}, err
+	}
+	return s.cfg.Jobs.get(ctx, uid, id)
+}
+
+func (s *service) CancelJob(ctx context.Context, id string) (Job, error) {
+	uid, err := userID(ctx)
+	if err != nil {
+		return Job{}, err
+	}
+	return s.cfg.Jobs.cancel(ctx, uid, id)
+}
+
+func (s *service) ConversationJob(ctx context.Context, conversationID string) (*Job, error) {
+	uid, err := userID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.cfg.Jobs.latest(ctx, uid, conversationID)
+}
+
+// runChat runs one turn of a conversation and saves it. message is already
+// validated; progress (may be nil) sees each model and tool step.
+func (s *service) runChat(ctx context.Context, sessionID, message string, progress func(Step)) (ChatReply, error) {
+	uid, err := userID(ctx)
+	if err != nil {
+		return ChatReply{}, err
 	}
 	l := s.lock(uid + "/" + sessionID)
 	l.Lock()
@@ -173,7 +236,7 @@ func (s *service) Chat(ctx context.Context, sessionID, message string) (ChatRepl
 	if err != nil {
 		return ChatReply{}, fmt.Errorf("loading conversation: %w", err)
 	}
-	history, reply, calls, runErr := s.cfg.Agent.Run(withReason(ctx, message), prev, message)
+	history, reply, calls, runErr := s.cfg.Agent.RunWithProgress(withReason(ctx, message), prev, message, progress)
 
 	// Save the turn (even a failed one, so the transcript shows it). Only the
 	// messages this turn added are appended; a failed run adds none.
@@ -183,8 +246,12 @@ func (s *service) Chat(ctx context.Context, sessionID, message string) (ChatRepl
 	}
 	if runErr != nil {
 		turn.Error = runErr.Error()
+		if errors.Is(runErr, context.Canceled) {
+			turn.Error = "Stopped before finishing."
+		}
 	}
-	saveErr := s.cfg.Store.AppendTurn(ctx, uid, sessionID, history[len(prev):], turn)
+	// Saved even if the request was cancelled, so a stopped turn still shows.
+	saveErr := s.cfg.Store.AppendTurn(context.WithoutCancel(ctx), uid, sessionID, history[len(prev):], turn)
 
 	if runErr != nil {
 		return ChatReply{ToolCalls: calls}, runErr
@@ -356,13 +423,4 @@ func zoneName(loc *time.Location) string {
 	}
 	name, _ := time.Now().In(loc).Zone()
 	return name
-}
-
-func firstNonEmpty(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }

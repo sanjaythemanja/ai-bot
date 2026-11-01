@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarDays, Menu } from "lucide-react";
-import { api, ApiError, type Me } from "./api";
+import { api, ApiError, type Job, type Me } from "./api";
 import { SignIn } from "./components/SignIn";
 import { Mark } from "./components/ui";
 import { Chat, type ChatMessage } from "./components/Chat";
@@ -12,12 +12,20 @@ import { IconButton } from "./components/ui";
 
 const newId = () => crypto.randomUUID();
 
+// The open conversation's ID, kept per tab so a reload reopens it (and
+// picks up a reply still being worked on).
 function readSession(): string {
+  let id = "";
   try {
-    return sessionStorage.getItem("session_id") || newId();
+    id = sessionStorage.getItem("session_id") ?? "";
   } catch {
-    return newId();
+    /* storage blocked: a fresh ID each load */
   }
+  if (!id) {
+    id = newId();
+    saveSession(id);
+  }
+  return id;
 }
 
 function saveSession(id: string) {
@@ -99,11 +107,17 @@ function Workspace({ me }: { me: Me }) {
   const [navOpen, setNavOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [restored, setRestored] = useState(false);
+  const [resumeJob, setResumeJob] = useState<Job | null>(null);
+
+  // A conversation may still be working in the background (sent before a
+  // reload, or from another tab); if so, Chat picks it up.
+  const runningJob = (id: string) =>
+    api.conversationJob(id).then((j) => (j?.status === "running" ? j : null)).catch(() => null);
 
   const open = useCallback(async (id: string) => {
     setNavOpen(false);
     try {
-      const c = await api.conversation(id);
+      const [c, running] = await Promise.all([api.conversation(id), runningJob(id)]);
       const msgs: ChatMessage[] = [];
       for (const t of c.turns ?? []) {
         msgs.push({ role: "user", text: t.user_text });
@@ -113,6 +127,7 @@ function Workspace({ me }: { me: Me }) {
             : { role: "assistant", text: t.reply || "(no reply)", tools: t.tool_calls ?? [] },
         );
       }
+      setResumeJob(running);
       setSessionId(id);
       saveSession(id);
       setMessages(msgs);
@@ -123,6 +138,7 @@ function Workspace({ me }: { me: Me }) {
 
   const startNew = () => {
     const id = newId();
+    setResumeJob(null);
     setSessionId(id);
     saveSession(id);
     setMessages([]);
@@ -134,6 +150,8 @@ function Workspace({ me }: { me: Me }) {
     if (restored || !convs.data) return;
     setRestored(true);
     if (convs.data.some((c) => c.id === sessionId)) open(sessionId);
+    // A first message still running has no saved conversation yet.
+    else runningJob(sessionId).then((j) => j && setResumeJob(j));
   }, [convs.data, restored, sessionId, open]);
 
   const s = status.data;
@@ -194,7 +212,8 @@ function Workspace({ me }: { me: Me }) {
         </header>
 
         <Chat
-          key={sessionId}
+          key={`${sessionId}:${resumeJob?.id ?? ""}`}
+          resumeJob={resumeJob}
           sessionId={sessionId}
           messages={messages}
           setMessages={setMessages}

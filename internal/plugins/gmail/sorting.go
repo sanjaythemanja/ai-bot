@@ -190,7 +190,8 @@ func (p *Plugin) sortingTools() []plugin.Tool {
 			},
 		},
 		{
-			Name: "add_sorting_rule",
+			Name:    "add_sorting_rule",
+			Mutates: true,
 			Description: "Remember a sorting correction, e.g. 'emails from Acme are always important' or 'LinkedIn is low priority'. " +
 				"It is a private preference (nothing is sent) and applies from now on. Replaces an existing rule with the same match.",
 			Properties: map[string]any{"match": match, "priority": map[string]any{"type": "string", "enum": []string{"important", "low"}, "description": "Priority to always give matching mail"}},
@@ -218,6 +219,7 @@ func (p *Plugin) sortingTools() []plugin.Tool {
 		},
 		{
 			Name:        "remove_sorting_rule",
+			Mutates:     true,
 			Description: "Delete one of the user's email sorting rules.",
 			Properties:  map[string]any{"match": match},
 			Required:    []string{"match"},

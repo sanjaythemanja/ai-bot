@@ -14,6 +14,10 @@ import (
 // Endpoints collects every service method as a go-kit endpoint.
 type Endpoints struct {
 	Chat          endpoint.Endpoint
+	StartChat     endpoint.Endpoint
+	GetJob        endpoint.Endpoint
+	CancelJob     endpoint.Endpoint
+	ConvJob       endpoint.Endpoint
 	ListConvs     endpoint.Endpoint
 	GetConv       endpoint.Endpoint
 	DeleteConv    endpoint.Endpoint
@@ -34,6 +38,10 @@ func MakeEndpoints(s Service, logger log.Logger) Endpoints {
 	}
 	return Endpoints{
 		Chat:          wrap("chat", makeChatEndpoint(s)),
+		StartChat:     wrap("start_chat", makeStartChatEndpoint(s)),
+		GetJob:        wrap("get_job", makeGetJobEndpoint(s)),
+		CancelJob:     wrap("cancel_job", makeCancelJobEndpoint(s)),
+		ConvJob:       wrap("conversation_job", makeConvJobEndpoint(s)),
 		ListConvs:     wrap("list_conversations", makeListConvsEndpoint(s)),
 		GetConv:       wrap("get_conversation", makeGetConvEndpoint(s)),
 		DeleteConv:    wrap("delete_conversation", makeDeleteConvEndpoint(s)),
@@ -76,6 +84,11 @@ type (
 	}
 	chatResponse struct {
 		ChatReply
+		Err error `json:"-"`
+	}
+	jobRequest  struct{ ID string }
+	jobResponse struct {
+		Job *Job  `json:"job"` // null when a conversation has no job
 		Err error `json:"-"`
 	}
 	convRequest       struct{ ID string }
@@ -128,6 +141,7 @@ type (
 )
 
 func (r chatResponse) Failed() error        { return r.Err }
+func (r jobResponse) Failed() error         { return r.Err }
 func (r listConvsResponse) Failed() error   { return r.Err }
 func (r getConvResponse) Failed() error     { return r.Err }
 func (r deleteConvResponse) Failed() error  { return r.Err }
@@ -144,6 +158,35 @@ func makeChatEndpoint(s Service) endpoint.Endpoint {
 		req := request.(chatRequest)
 		r, err := s.Chat(ctx, req.SessionID, req.Message)
 		return chatResponse{ChatReply: r, Err: err}, nil
+	}
+}
+
+func makeStartChatEndpoint(s Service) endpoint.Endpoint {
+	return func(ctx context.Context, request any) (any, error) {
+		req := request.(chatRequest)
+		j, err := s.StartChat(ctx, req.SessionID, req.Message)
+		return jobResponse{Job: &j, Err: err}, nil
+	}
+}
+
+func makeGetJobEndpoint(s Service) endpoint.Endpoint {
+	return func(ctx context.Context, request any) (any, error) {
+		j, err := s.GetJob(ctx, request.(jobRequest).ID)
+		return jobResponse{Job: &j, Err: err}, nil
+	}
+}
+
+func makeCancelJobEndpoint(s Service) endpoint.Endpoint {
+	return func(ctx context.Context, request any) (any, error) {
+		j, err := s.CancelJob(ctx, request.(jobRequest).ID)
+		return jobResponse{Job: &j, Err: err}, nil
+	}
+}
+
+func makeConvJobEndpoint(s Service) endpoint.Endpoint {
+	return func(ctx context.Context, request any) (any, error) {
+		j, err := s.ConversationJob(ctx, request.(convRequest).ID)
+		return jobResponse{Job: j, Err: err}, nil
 	}
 }
 

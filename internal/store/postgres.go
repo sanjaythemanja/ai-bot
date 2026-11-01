@@ -288,6 +288,47 @@ func (p *Postgres) PutSetting(ctx context.Context, userID, key string, value []b
 	return err
 }
 
+// ---------- jobs ----------
+
+const jobCols = `id, user_id, conversation_id, status, data, created_at, updated_at`
+
+func scanJob(r pgx.Row) (Job, error) {
+	var j Job
+	var data []byte
+	err := r.Scan(&j.ID, &j.UserID, &j.ConversationID, &j.Status, &data, &j.CreatedAt, &j.UpdatedAt)
+	j.Data = data
+	if errors.Is(err, pgx.ErrNoRows) {
+		return j, ErrJobNotFound
+	}
+	return j, err
+}
+
+func (p *Postgres) SaveJob(ctx context.Context, j Job) error {
+	// The WHERE keeps another user from overwriting a job ID they guessed.
+	tag, err := p.pool.Exec(ctx, `
+		INSERT INTO jobs (id, user_id, conversation_id, status, data) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, data = EXCLUDED.data, updated_at = now()
+		WHERE jobs.user_id = EXCLUDED.user_id`, j.ID, j.UserID, j.ConversationID, j.Status, []byte(j.Data))
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrJobNotFound
+	}
+	return err
+}
+
+func (p *Postgres) GetJob(ctx context.Context, userID, id string) (Job, error) {
+	return scanJob(p.pool.QueryRow(ctx, `SELECT `+jobCols+` FROM jobs WHERE id = $1 AND user_id = $2`, id, userID))
+}
+
+func (p *Postgres) LatestJob(ctx context.Context, userID, conversationID string) (Job, error) {
+	return scanJob(p.pool.QueryRow(ctx, `SELECT `+jobCols+` FROM jobs WHERE user_id = $1 AND conversation_id = $2
+		ORDER BY created_at DESC LIMIT 1`, userID, conversationID))
+}
+
+func (p *Postgres) InterruptRunning(ctx context.Context) (int, error) {
+	tag, err := p.pool.Exec(ctx, `UPDATE jobs SET status = 'interrupted', updated_at = now() WHERE status = 'running'`)
+	return int(tag.RowsAffected()), err
+}
+
 // ---------- actions ----------
 
 // PGActions is the Actions view of Postgres.
@@ -381,5 +422,6 @@ var (
 	_ Users       = (*Postgres)(nil)
 	_ Connections = (*Postgres)(nil)
 	_ Settings    = (*Postgres)(nil)
+	_ Jobs        = (*Postgres)(nil)
 	_ Actions     = PGActions{}
 )

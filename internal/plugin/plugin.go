@@ -27,7 +27,11 @@ type Tool struct {
 	Properties  map[string]any // JSON Schema properties of the input object
 	Required    []string
 
-	Write   bool
+	Write bool
+	// Mutates marks a tool that changes something without needing approval
+	// (a draft, a saved rule). Such tools, like writes, never run alongside
+	// other tool calls; pure reads run in parallel.
+	Mutates bool
 	Run     func(ctx context.Context, input json.RawMessage) (any, error)
 	Propose func(ctx context.Context, input json.RawMessage) (Proposal, error)
 }

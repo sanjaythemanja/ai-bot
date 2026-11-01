@@ -13,10 +13,11 @@ import {
   ShieldCheck,
   Square,
 } from "lucide-react";
-import { api, type ToolCall } from "../api";
+import { api, watchJob, type Job, type ToolCall } from "../api";
 import { greeting, longDate, stripStamp, toolLabel, toolOutcome } from "../lib/format";
 import { canDictate, speak, stopSpeaking, useDictation } from "../lib/speech";
 import { ActionCard } from "./ActionCard";
+import { JobProgress } from "./JobProgress";
 import { StatusPill } from "./RightRail";
 import { Mark, Pill, Thinking } from "./ui";
 
@@ -40,6 +41,7 @@ export function Chat({
   aiHint,
   requireApproval,
   undoSeconds,
+  resumeJob,
 }: {
   sessionId: string;
   messages: ChatMessage[];
@@ -48,20 +50,65 @@ export function Chat({
   aiHint?: string;
   requireApproval: boolean;
   undoSeconds: number;
+  resumeJob?: Job | null; // a job still running when this conversation was opened
 }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [job, setJob] = useState<Job | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const unwatch = useRef<(() => void) | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
-  }, [messages.length, busy]);
+  }, [messages.length, busy, job?.steps?.length]);
 
   useEffect(() => input.current?.focus(), [sessionId]);
 
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["conversations"] });
+    qc.invalidateQueries({ queryKey: ["actions"] });
+    qc.invalidateQueries({ queryKey: ["overview"] });
+  };
+
+  // follow watches a job until it ends, then turns it into a reply.
   // viaVoice: the message was spoken, so the reply is read aloud too.
+  function follow(j: Job, viaVoice: boolean) {
+    setJob(j);
+    setBusy(true);
+    unwatch.current?.();
+    unwatch.current = watchJob(j.id, (u) => {
+      setJob(u);
+      qc.invalidateQueries({ queryKey: ["actions"] }); // approvals appear as soon as they're queued
+      if (u.status === "running") return;
+      if (u.status === "done") {
+        setMessages((m) => [...m, { role: "assistant", text: u.reply || "(no reply)", tools: u.tool_calls ?? [], warning: u.warning }]);
+        if (viaVoice && u.reply) speak(u.reply);
+      } else {
+        setMessages((m) => [...m, { role: "error", text: u.error || "Something went wrong." }]);
+      }
+      unwatch.current = null;
+      setJob(null);
+      setBusy(false);
+      setStopping(false);
+      refresh();
+      input.current?.focus();
+    });
+  }
+
+  // Pick up a job that was still running when this conversation opened;
+  // stop watching (not the job) when leaving it.
+  useEffect(() => {
+    if (resumeJob?.status === "running") {
+      setMessages((m) => [...m, { role: "user", text: resumeJob.message }]);
+      follow(resumeJob, false);
+    }
+    return () => unwatch.current?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function send(text: string, viaVoice = false) {
     const msg = text.trim();
     if (!msg || busy) return;
@@ -70,17 +117,21 @@ export function Chat({
     setBusy(true);
     setMessages((m) => [...m, { role: "user", text: msg }]);
     try {
-      const r = await api.chat(sessionId, msg);
-      setMessages((m) => [...m, { role: "assistant", text: r.reply || "(no reply)", tools: r.tool_calls ?? [], warning: r.warning }]);
-      if (viaVoice && r.reply) speak(r.reply);
+      follow(await api.startChat(sessionId, msg), viaVoice);
     } catch (e) {
       setMessages((m) => [...m, { role: "error", text: (e as Error).message }]);
-    } finally {
       setBusy(false);
-      qc.invalidateQueries({ queryKey: ["conversations"] });
-      qc.invalidateQueries({ queryKey: ["actions"] });
-      qc.invalidateQueries({ queryKey: ["overview"] });
-      input.current?.focus();
+      refresh();
+    }
+  }
+
+  async function stop() {
+    if (!job) return;
+    setStopping(true);
+    try {
+      await api.cancelJob(job.id);
+    } catch {
+      setStopping(false);
     }
   }
 
@@ -95,13 +146,17 @@ export function Chat({
               {messages.map((m, i) => (
                 <Message key={i} m={m} undoSeconds={undoSeconds} />
               ))}
-              {busy && (
-                <div className="flex gap-3 rise">
-                  <Mark size={26} />
-                  <div className="pt-1">
-                    <Thinking label="Working on it" />
+              {job ? (
+                <JobProgress job={job} onStop={stop} stopping={stopping} />
+              ) : (
+                busy && (
+                  <div className="flex gap-3 rise">
+                    <Mark size={26} />
+                    <div className="pt-1">
+                      <Thinking label="Working on it" />
+                    </div>
                   </div>
-                </div>
+                )
               )}
             </div>
           )}

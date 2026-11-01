@@ -4,6 +4,7 @@
 package calendar
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -419,7 +420,7 @@ func (p *Plugin) Execute(ctx context.Context, kind string, payload json.RawMessa
 		if err != nil {
 			return "", err
 		}
-		return "Event created: " + plugin.FirstNonEmpty(created.Link, created.ID), nil
+		return "Event created: " + cmp.Or(created.Link, created.ID), nil
 	case KindUpdateEvent:
 		var pl eventUpdate
 		if err := json.Unmarshal(payload, &pl); err != nil {
@@ -429,7 +430,7 @@ func (p *Plugin) Execute(ctx context.Context, kind string, payload json.RawMessa
 		if err != nil {
 			return "", err
 		}
-		return "Event updated: " + plugin.FirstNonEmpty(ev.Link, ev.ID), nil
+		return "Event updated: " + cmp.Or(ev.Link, ev.ID), nil
 	case KindDeleteEvent:
 		var r eventRef
 		if err := json.Unmarshal(payload, &r); err != nil {
@@ -531,7 +532,7 @@ func (p *Plugin) searchSlots(ctx context.Context, q slotQuery, extra []provider.
 		q.Duration = 30
 	}
 	r := p.rules(ctx)
-	from, to, err := p.dayWindow(q.Date, plugin.FirstNonEmpty(q.DayStart, r.WorkStart), plugin.FirstNonEmpty(q.DayEnd, r.WorkEnd))
+	from, to, err := p.dayWindow(q.Date, cmp.Or(q.DayStart, r.WorkStart), cmp.Or(q.DayEnd, r.WorkEnd))
 	if err != nil {
 		return nil, err
 	}
@@ -673,7 +674,7 @@ func (p *Plugin) commonSlots(ctx context.Context, raw json.RawMessage) (any, err
 		return nil, err
 	}
 	r := p.rules(ctx)
-	from, to, err := p.dayWindow(in.Date, plugin.FirstNonEmpty(in.DayStart, r.WorkStart), plugin.FirstNonEmpty(in.DayEnd, r.WorkEnd))
+	from, to, err := p.dayWindow(in.Date, cmp.Or(in.DayStart, r.WorkStart), cmp.Or(in.DayEnd, r.WorkEnd))
 	if err != nil {
 		return nil, err
 	}

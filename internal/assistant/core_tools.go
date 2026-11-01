@@ -53,7 +53,8 @@ func (t *Toolbox) coreTools() []plugin.Tool {
 			},
 		},
 		{
-			Name: "edit_pending_action",
+			Name:    "edit_pending_action",
+			Mutates: true,
 			Description: "Change an action that is still waiting for approval, instead of queuing a new one. " +
 				"Only the fields you pass change. Editable fields by action kind — " + strings.Join(editable, "; ") + ".",
 			Properties: editProps,
@@ -62,6 +63,7 @@ func (t *Toolbox) coreTools() []plugin.Tool {
 		},
 		{
 			Name:        "cancel_pending_action",
+			Mutates:     true,
 			Description: "Cancel (reject) an action that is waiting for approval, so it never runs.",
 			Properties:  map[string]any{"action_id": plugin.Str("Pending action ID")},
 			Required:    []string{"action_id"},

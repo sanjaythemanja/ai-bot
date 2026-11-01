@@ -164,7 +164,8 @@ func (p *Plugin) ruleTools() []plugin.Tool {
 			Run:         func(ctx context.Context, _ json.RawMessage) (any, error) { return p.rules(ctx), nil },
 		},
 		{
-			Name: "set_time_rules",
+			Name:    "set_time_rules",
+			Mutates: true,
 			Description: "Save the user's scheduling rules, e.g. 'never book before 10am', 'keep Tue/Thu 2–4pm for focus', 'no meetings Friday afternoon'. " +
 				"Only the fields you pass change; protected replaces the whole list, so read get_time_rules first and include the blocks to keep. It is a private preference (nothing is sent).",
 			Properties: map[string]any{

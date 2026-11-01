@@ -7,21 +7,7 @@ import (
 	"github.com/sanjayrj/ai-bot/internal/store"
 )
 
-// ActionKind identifies an outward-facing operation that needs approval.
-type ActionKind = string
-
-const (
-	ActionSendEmail   ActionKind = "send_email"
-	ActionCreateEvent ActionKind = "create_event"
-	ActionUpdateEvent ActionKind = "update_event"
-	ActionDeleteEvent ActionKind = "delete_event"
-	ActionSendDraft   ActionKind = "send_draft"
-	ActionDeleteDraft ActionKind = "delete_draft"
-)
-
-// ActionStatus is the lifecycle state of an Action.
-type ActionStatus = string
-
+// Action statuses (an action's kind is defined by the plugin that runs it).
 const (
 	StatusPending  = store.StatusPending
 	StatusExecuted = store.StatusExecuted

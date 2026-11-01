@@ -92,12 +92,14 @@ func newTestHandler(model llm.Client, requireApproval bool) http.Handler {
 	ws := mock.New(time.Now().In(loc))
 	actions := NewActionStore()
 	tools := NewToolbox(actions, requireApproval, demoPlugins(ws, loc)...)
+	jobs := NewJobs(store.NewMemory(), nil)
 	svc := NewService(Config{
 		Mail: ws.Mail(), Calendar: ws.Calendar(), Agent: NewAgent(model, tools, loc, nil), Tools: tools, Actions: actions,
-		Location: loc, DemoMode: true, AIConfigured: model != nil, AIProvider: "test", Model: "test-model",
+		Location: loc, DemoMode: true, AIConfigured: model != nil, AIProvider: "test", Model: "test-model", Jobs: jobs,
 	})
 	mux := http.NewServeMux()
 	RegisterHTTPRoutes(mux, MakeEndpoints(svc, log.NewNopLogger()), log.NewNopLogger())
+	RegisterJobStream(mux, jobs)
 	return mux
 }
 
@@ -165,7 +167,7 @@ func TestChatFlowWithEachProvider(t *testing.T) {
 
 			var list struct{ Actions []Action }
 			getJSON(t, srv.URL+"/api/actions", &list)
-			if len(list.Actions) != 1 || list.Actions[0].Status != StatusPending || list.Actions[0].Kind != ActionSendEmail {
+			if len(list.Actions) != 1 || list.Actions[0].Status != StatusPending || list.Actions[0].Kind != "send_email" {
 				t.Fatalf("expected one pending email action, got %+v", list.Actions)
 			}
 			id := list.Actions[0].ID

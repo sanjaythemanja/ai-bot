@@ -198,3 +198,34 @@ func TestPostgresSettingsAndActionReason(t *testing.T) {
 		t.Fatalf("reason not stored: %+v %v", a, err)
 	}
 }
+
+func TestPostgresJobs(t *testing.T) {
+	pg := openTestPG(t)
+	ctx := context.Background()
+	suffix := time.Now().Format("150405.000000")
+	u, _ := pg.UpsertUser(ctx, "test-j-"+suffix, "j-"+suffix+"@example.com", "J")
+	other, _ := pg.UpsertUser(ctx, "test-j2-"+suffix, "j2-"+suffix+"@example.com", "J2")
+	t.Cleanup(func() {
+		_, _ = pg.pool.Exec(context.Background(), `DELETE FROM users WHERE id = ANY($1)`, []string{u.ID, other.ID})
+	})
+
+	id := "job-" + suffix
+	if err := pg.SaveJob(ctx, Job{ID: id, UserID: u.ID, ConversationID: "c1", Status: JobRunning, Data: []byte(`{"steps":[]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.SaveJob(ctx, Job{ID: id, UserID: other.ID, ConversationID: "c1", Status: JobDone, Data: []byte(`{}`)}); !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("another user must not overwrite a job: %v", err)
+	}
+	if _, err := pg.GetJob(ctx, other.ID, id); !errors.Is(err, ErrJobNotFound) {
+		t.Fatal("job visible to another user")
+	}
+	if j, err := pg.LatestJob(ctx, u.ID, "c1"); err != nil || j.ID != id || j.Status != JobRunning {
+		t.Fatalf("latest: %+v %v", j, err)
+	}
+	if n, err := pg.InterruptRunning(ctx); err != nil || n < 1 {
+		t.Fatalf("interrupt: %d %v", n, err)
+	}
+	if j, _ := pg.GetJob(ctx, u.ID, id); j.Status != JobInterrupted {
+		t.Fatalf("expected interrupted, got %s", j.Status)
+	}
+}

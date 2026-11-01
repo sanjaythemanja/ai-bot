@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-kit/kit/transport"
 	httptransport "github.com/go-kit/kit/transport/http"
@@ -28,6 +30,10 @@ func RegisterHTTPRoutes(mux *http.ServeMux, e Endpoints, logger log.Logger) {
 	}
 
 	handle("POST /api/chat", e.Chat, decodeChat)
+	handle("POST /api/chat/start", e.StartChat, decodeChat)
+	handle("GET /api/jobs/{id}", e.GetJob, decodeJobRequest)
+	handle("POST /api/jobs/{id}/cancel", e.CancelJob, decodeJobRequest)
+	handle("GET /api/conversations/{id}/job", e.ConvJob, decodeConv)
 	handle("GET /api/conversations", e.ListConvs, decodeEmpty)
 	handle("GET /api/conversations/{id}", e.GetConv, decodeConv)
 	handle("POST /api/conversations/{id}/delete", e.DeleteConv, decodeConv)
@@ -63,6 +69,10 @@ func decodeConv(_ context.Context, r *http.Request) (any, error) {
 	return convRequest{ID: r.PathValue("id")}, nil
 }
 
+func decodeJobRequest(_ context.Context, r *http.Request) (any, error) {
+	return jobRequest{ID: r.PathValue("id")}, nil
+}
+
 func decodeAction(_ context.Context, r *http.Request) (any, error) {
 	return actionRequest{ID: r.PathValue("id")}, nil
 }
@@ -88,9 +98,9 @@ func codeFrom(err error) int {
 	switch {
 	case errors.Is(err, errBadRequest), errors.Is(err, ErrEmptyMessage):
 		return http.StatusBadRequest
-	case errors.Is(err, ErrActionNotFound), errors.Is(err, ErrUnknownTool), errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, ErrActionNotFound), errors.Is(err, ErrUnknownTool), errors.Is(err, store.ErrNotFound), errors.Is(err, ErrJobNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, ErrActionResolved):
+	case errors.Is(err, ErrActionResolved), errors.Is(err, ErrJobRunning):
 		return http.StatusConflict
 	case errors.Is(err, auth.ErrUnauthorized):
 		return http.StatusUnauthorized
@@ -101,4 +111,49 @@ func codeFrom(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// RegisterJobStream mounts GET /api/jobs/{id}/events, a Server-Sent Events
+// stream of a job's snapshots until it ends. It is plain net/http rather
+// than go-kit because it streams instead of returning one response.
+func RegisterJobStream(mux *http.ServeMux, jobs *Jobs) {
+	mux.HandleFunc("GET /api/jobs/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		job, updates, stop, err := jobs.Watch(r.Context(), r.PathValue("id"))
+		if err != nil {
+			encodeError(r.Context(), err, w)
+			return
+		}
+		defer stop()
+
+		rc := http.NewResponseController(w)
+		_ = rc.SetWriteDeadline(time.Time{}) // a stream may outlive the server's write timeout
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Accel-Buffering", "no")
+		send := func(j Job) bool {
+			b, _ := json.Marshal(j)
+			if _, err := fmt.Fprintf(w, "event: job\ndata: %s\n\n", b); err != nil {
+				return false
+			}
+			return rc.Flush() == nil
+		}
+		if !send(job) || job.Finished() {
+			return
+		}
+		ping := time.NewTicker(15 * time.Second) // keeps proxies from closing an idle stream
+		defer ping.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case j, ok := <-updates:
+				if !ok || !send(j) || j.Finished() {
+					return
+				}
+			case <-ping.C:
+				if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil || rc.Flush() != nil {
+					return
+				}
+			}
+		}
+	})
 }

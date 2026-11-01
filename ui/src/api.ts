@@ -71,6 +71,26 @@ export type ToolCall = { name: string; input: string; is_error: boolean; output:
 
 export type ChatReply = { reply: string; tool_calls: ToolCall[] | null; warning?: string };
 
+export type StepStatus = "running" | "summarizing" | "done" | "error";
+
+export type Step = { id: string; kind: "model" | "tool"; name?: string; hint?: string; status: StepStatus; error?: string };
+
+export type JobStatus = "running" | "done" | "failed" | "cancelled" | "interrupted";
+
+// A chat turn running in the background (see internal/assistant/jobs.go).
+export type Job = {
+  id: string;
+  conversation_id: string;
+  message: string;
+  status: JobStatus;
+  steps: Step[] | null;
+  reply?: string;
+  tool_calls?: ToolCall[] | null;
+  warning?: string;
+  error?: string;
+  created_at: string;
+};
+
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -142,9 +162,50 @@ export const api = {
       return r.result;
     }),
   chat: (sessionId: string, message: string) => post<ChatReply>("/api/chat", { session_id: sessionId, message }),
+  startChat: (sessionId: string, message: string) =>
+    post<{ job: Job }>("/api/chat/start", { session_id: sessionId, message }).then((r) => r.job),
+  job: (id: string) => request<{ job: Job }>(`/api/jobs/${encodeURIComponent(id)}`).then((r) => r.job),
+  cancelJob: (id: string) => post<{ job: Job }>(`/api/jobs/${encodeURIComponent(id)}/cancel`).then((r) => r.job),
+  conversationJob: (id: string) =>
+    request<{ job: Job | null }>(`/api/conversations/${encodeURIComponent(id)}/job`).then((r) => r.job),
   briefing: () => post<Briefing>("/api/briefing"),
   conversations: () =>
     request<{ conversations: ConversationSummary[] | null }>("/api/conversations").then((r) => r.conversations ?? []),
   conversation: (id: string) => request<Conversation>(`/api/conversations/${encodeURIComponent(id)}`),
   deleteConversation: (id: string) => post(`/api/conversations/${encodeURIComponent(id)}/delete`),
 };
+
+// watchJob follows a job's progress over Server-Sent Events, falling back to
+// polling if the stream can't be opened. Returns a function that stops
+// watching (the job itself keeps running on the server).
+export function watchJob(id: string, onUpdate: (j: Job) => void): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const es = new EventSource(`/api/jobs/${encodeURIComponent(id)}/events`);
+  const deliver = (j: Job) => {
+    if (stopped) return;
+    onUpdate(j);
+    if (j.status !== "running") stop();
+  };
+  const poll = () => {
+    if (stopped) return;
+    api
+      .job(id)
+      .then(deliver)
+      .catch(() => {})
+      .finally(() => {
+        if (!stopped) timer = setTimeout(poll, 2000);
+      });
+  };
+  es.addEventListener("job", (e) => deliver(JSON.parse((e as MessageEvent).data) as Job));
+  es.onerror = () => {
+    // A closed stream (404, sign-out, proxy) won't reconnect by itself: poll.
+    if (es.readyState === EventSource.CLOSED && !timer) poll();
+  };
+  function stop() {
+    stopped = true;
+    es.close();
+    if (timer) clearTimeout(timer);
+  }
+  return stop;
+}

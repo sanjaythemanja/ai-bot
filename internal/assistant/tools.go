@@ -125,6 +125,13 @@ func (t *Toolbox) Call(ctx context.Context, name string, input json.RawMessage) 
 	return string(b), nil
 }
 
+// Serial reports whether a tool changes state (a write or a mutating tool),
+// so it must not run alongside other tool calls.
+func (t *Toolbox) Serial(name string) bool {
+	tl, ok := t.tools[name]
+	return ok && (tl.Write || tl.Mutates)
+}
+
 // RequiresApproval reports whether writes wait for the user.
 func (t *Toolbox) RequiresApproval() bool { return t.requireApproval }
 
